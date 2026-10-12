@@ -19,9 +19,14 @@ function tester() { const id = store.get('tester', null); return cfg?.testers.fi
 function testerName(id) { return cfg?.testers.find(t => t.id === id)?.name || ''; }
 
 // ---------- sending ----------
+// The banner only appears if something has been waiting over 5 seconds (or there's no signal),
+// so it doesn't flash up on every normal save.
+let waitingSince = null;
 function showPending() {
   const el = $('#pending');
-  if (!queue.length) { el.classList.add('hidden'); return; }
+  if (!queue.length) { waitingSince = null; el.classList.add('hidden'); return; }
+  if (!waitingSince) { waitingSince = Date.now(); setTimeout(showPending, 5200); }
+  if (navigator.onLine && !lastSendError && Date.now() - waitingSince < 5000) return;
   const n = queue.filter(q => q.kind === 'test').length || queue.length;
   el.classList.remove('hidden');
   el.textContent = `⟳ ${n} waiting to send`;
@@ -212,12 +217,20 @@ function trackHtml(stroke, h, l, next) {
     <div class="track-ends"><span>${stock[0]}</span><span>${stock[stock.length - 1]}</span></div>`;
 }
 
-function pointsHtml(h) {
+// Results for one strut. Where the answer lies outside the struts we stock, say so
+// (e.g. "Below 400"), rather than leaving a blank that looks like a finished result.
+function pointsHtml(h, stroke) {
+  const stock = stroke === 150 ? cfg.stock150 : cfg.stock100;
+  const lo = stock[0], hi = stock[stock.length - 1];
+  const opens = h.lowGood ?? (h.highFail === hi || h.status === 'toostrong' ? `Over ${hi}` : '–');
+  const str = rangeText(h.struggles) || (h.lowGood === lo ? `Below ${lo}` : '–');
+  const no = h.highFail ?? (h.lowPass === lo ? `Below ${lo}` : '–');
   return `<div class="points">
-    <div class="p-good"><b>${h.lowGood ?? '–'}</b><small>Opens</small></div>
-    <div class="p-str"><b>${rangeText(h.struggles) || '–'}</b><small>Struggles</small></div>
-    <div class="p-no"><b>${h.highFail ?? '–'}</b><small>Doesn't open</small></div></div>`;
+    <div class="p-good"><b>${opens}</b><small>Opens</small></div>
+    <div class="p-str"><b>${str}</b><small>Struggles</small></div>
+    <div class="p-no"><b>${no}</b><small>Doesn't open</small></div></div>`;
 }
+function outOfRange(h) { return h.highFail === null || h.lowGood === null || h.status === 'paused'; }
 
 function showTest(lidId, state) {
   home(true);
@@ -239,7 +252,7 @@ function showTest(lidId, state) {
       <button class="force ${changed ? 'changed' : ''} ${changed && st.pop ? 'pop' : ''}" data-pick="${stroke}">
         <span class="n">${f}</span><span class="u">N</span>${changed ? `<span class="was">was ${prevF}</span>` : ''}</button>
       ${trackHtml(stroke, h, l, f)}
-      ${h.done ? pointsHtml(h) : ''}
+      ${h.done ? pointsHtml(h, stroke) : ''}
       ${stroke === 100 ? '<p class="muted" style="margin:8px 0 0">Help it to halfway first if needed</p>' : ''}
       <div class="tiles">${RATING_ORDER.map(r => `<button class="tile ${RATINGS[r].cls} ${st[part] === r ? 'sel' : ''}" data-part="${part}" data-v="${r}">
         <span class="ic">${RATINGS[r].icon}</span>${RATINGS[r].label}</button>`).join('')}</div>
@@ -310,9 +323,10 @@ function showWin(lidId) {
   const l = lids[lidId];
   const sug = nextSuggestion(l.tests, cfg, missingOf(l));
   screen(`
-    <div class="card win"><div class="em">🎉</div><h1>All found!</h1><div class="muted">${esc(l.reference)} · ${sizeText(l)} · ${l.tests.length} tries</div></div>
-    <div class="card"><div class="tag">150 strut</div>${pointsHtml(sug.h1)}</div>
-    <div class="card"><div class="tag">100 strut</div>${pointsHtml(sug.h2)}</div>
+    <div class="card win"><div class="em">${outOfRange(sug.h1) || outOfRange(sug.h2) ? '🏁' : '🎉'}</div>
+      <h1>${outOfRange(sug.h1) || outOfRange(sug.h2) ? 'Done, as far as our struts go' : 'All found!'}</h1><div class="muted">${esc(l.reference)} · ${sizeText(l)} · ${l.tests.length} tries</div></div>
+    <div class="card"><div class="tag">150 strut</div>${pointsHtml(sug.h1, 150)}</div>
+    <div class="card"><div class="tag">100 strut</div>${pointsHtml(sug.h2, 100)}</div>
     <button class="btn go" id="fin"><span class="big">✓</span> Finish rooflight</button>
     <button class="btn ghost" id="more">One more try</button>`);
   on('#fin', () => finishLid(lidId));
