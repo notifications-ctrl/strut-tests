@@ -119,7 +119,7 @@ function rooflightCard(r) {
     ${isOpen ? (ts.length ? `<table class="tries"><tr><th>#</th><th>150 strut</th><th>100 strut</th><th>Note</th><th>When</th></tr>
       ${ts.map(t => `<tr><td>${t.test_no}</td>
         <td>${dot(t.part1)}<span class="f">${t.force_150}</span> ${RATINGS[t.part1].label}</td>
-        <td>${dot(t.part2)}<span class="f">${t.force_100}</span> ${RATINGS[t.part2].label}${t.seq_answer === 'yes' ? ' · long strut first' : ''}</td>
+        <td>${dot(t.part2)}<span class="f">${t.force_100}</span> ${RATINGS[t.part2].label}</td>
         <td>${esc(t.note)}</td><td>${fmt(t.tested_at)}</td></tr>`).join('')}</table>` : '<p class="note">No tries saved.</p>') : ''}
     <div class="rl-actions">
       <button data-open="${r.id}">${isOpen ? '▴ Hide tries' : '▾ Show tries'}</button>
@@ -212,11 +212,11 @@ function downloadCsv(name, text) {
 const isoDate = ts => ts ? new Date(ts).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }).replace(',', '') : '';
 function testsCsv() {
   const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Try no', '150 force N', '150 result', '100 force N', '100 result',
-    'Long strut opened first', 'Note', 'Tester', 'Tested at'];
+    'Note', 'Tester', 'Tested at'];
   const byId = Object.fromEntries(D.rooflights.map(r => [r.id, r]));
   const rows = D.tests.map(t => { const r = byId[t.rooflight_id] || {}; return [
     r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', t.test_no, t.force_150, RATINGS[t.part1].label,
-    t.force_100, RATINGS[t.part2].label, t.seq_answer ? SEQ[t.seq_answer] : '', t.note, nameOf(t.tester_id), isoDate(t.tested_at)]; });
+    t.force_100, RATINGS[t.part2].label, t.note, nameOf(t.tester_id), isoDate(t.tested_at)]; });
   return toCsv([head, ...rows]);
 }
 function summaryCsv() {

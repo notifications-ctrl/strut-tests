@@ -256,7 +256,6 @@ function showTest(lidId, state) {
   if (st.f150 === null) st.f150 = cfg.stock150[cfg.stock150.length - 1];
   if (st.f100 === null) st.f100 = cfg.stock100[cfg.stock100.length - 1];
   const prev = l.tests[l.tests.length - 1];
-  const seq = needsSeqQuestion(st.f150, st.f100);
 
   // A strut that's already found and still fitted at a force this rooflight has really been tested at
   // doesn't need rating again: its earlier rating is carried over (and noted), unless the tester chooses to rate it.
@@ -277,8 +276,7 @@ function showTest(lidId, state) {
         <p class="center" style="margin:0 0 6px;font-weight:800">${prev && f !== prevF ? `Change back to ${f} N` : 'Leave it fitted'} · no need to rate</p>
         ${pointsHtml(h, stroke)}
         <button class="btn ghost" data-rate="${stroke}" style="min-height:44px;margin:6px 0 0">Rate it anyway</button>
-        ${stroke === 100 && seq ? `<div class="seq"><span>Long strut first?</span>${Object.entries(SEQ).map(([k, v]) =>
-          `<button data-seq="${k}" class="${st.seq === k ? 'sel' : ''}">${k === 'notsure' ? '?' : v}</button>`).join('')}</div>` : ''}
+        
       </div>`;
     }
     const changed = prev && f !== prevF;
@@ -294,12 +292,11 @@ function showTest(lidId, state) {
       ${stroke === 100 ? '<p class="muted" style="margin:8px 0 0">Help it to halfway first if needed</p>' : ''}
       <div class="tiles">${RATING_ORDER.map(r => `<button class="tile ${RATINGS[r].cls} ${st[part] === r ? 'sel' : ''}" data-part="${part}" data-v="${r}">
         <span class="ic">${RATINGS[r].icon}</span>${RATINGS[r].label}</button>`).join('')}</div>
-      ${stroke === 100 && seq ? `<div class="seq"><span>Long strut first?</span>${Object.entries(SEQ).map(([k, v]) =>
-        `<button data-seq="${k}" class="${st.seq === k ? 'sel' : ''}">${k === 'notsure' ? '?' : v}</button>`).join('')}</div>` : ''}
+      
     </div>`;
   };
 
-  const ready = part1 && part2 && (!seq || st.seq);
+  const ready = part1 && part2;
   screen(`
     <div class="card-head"><div><b style="font-size:20px">${esc(l.reference)}</b> <span class="muted">${sizeText(l)}</span></div>
       <span class="muted">Try ${l.tests.length + 1}</span></div>
@@ -316,7 +313,6 @@ function showTest(lidId, state) {
 
   const keepNote = () => { const n = $('#note'); if (n) st.note = n.value; };
   on('[data-part]', e => { keepNote(); const { part, v } = e.currentTarget.dataset; st[part] = v; showTest(lidId, st); });
-  on('[data-seq]', e => { keepNote(); st.seq = e.currentTarget.dataset.seq; showTest(lidId, st); });
   on('[data-rate]', e => { keepNote(); st['rate' + e.currentTarget.dataset.rate] = true; showTest(lidId, st); });
   on('#addNote', () => { st.noteOpen = true; showTest(lidId, st); $('#note').focus(); });
   on('[data-pick]', e => { keepNote(); pickSheet(lidId, Number(e.currentTarget.dataset.pick), st); });
@@ -328,7 +324,7 @@ function showTest(lidId, state) {
       .map(s => `${s} kept from try ${kept[s].tryNo}, not re-rated`);
     const t = {
       id: uuid(), rooflight_id: lidId, test_no: l.tests.length + 1, force_150: st.f150, force_100: st.f100,
-      part1, part2, seq_answer: seq ? st.seq : '', temperature: '',
+      part1, part2, seq_answer: '', temperature: '',
       note: [(st.note || '').trim(), ...carried].filter(Boolean).join(' · '), tester_id: tester().id, tested_at: new Date().toISOString(),
     };
     l.tests.push(t); saveLids();
