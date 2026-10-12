@@ -9,20 +9,11 @@ const RATINGS = {
   stops:  { label: 'Stops part way', icon: '…', cls: 'r-stops',  pass: false, good: false }, // old code, not offered
   nomove: { label: "Doesn't open",   icon: '✕', cls: 'r-nomove', pass: false, good: false },
 };
-// Known from earlier rooflights rather than tested (never saved, never shown as a rating):
-const INFERRED = {
-  good: { pass: true, good: true },   // a bigger rooflight opened well here, so this one will
-  pass: { pass: true, good: null },   // a bigger rooflight at least opened here
-  fail: { pass: false, good: false }, // a smaller rooflight didn't open here, so this one won't
-  bad:  { pass: null, good: false },  // a smaller rooflight only struggled here, so this one won't open well
-};
 const RATING_ORDER = ['flies', 'smooth', 'slow', 'nomove'];
 const SEQ = { yes: 'Yes', no: 'No', notsure: 'Not sure' };
 const TEMPS = { cold: 'Cold', mild: 'Mild', warm: 'Warm' };
 
-// Suggestions use these steps. 100 N on the 150 strut cuts tries the most; any stocked strut can still be fitted by hand.
-const GRID_STEP = { 150: 100, 100: 50 };
-
+// Every strut is searched to the nearest 50 N stocked step.
 const HALVES = {
   1: { key: 'force_150', part: 'part1', stroke: 150 },
   2: { key: 'force_100', part: 'part2', stroke: 100 },
@@ -33,12 +24,9 @@ function closest(list, target) {
   for (const v of list) if (Math.abs(v - target) < Math.abs(best - target)) best = v;
   return best;
 }
-function onGrid(stock, stroke) {
-  const s = [...stock].sort((a, b) => a - b), step = GRID_STEP[stroke] || 50;
-  return s.filter(f => (f - s[0]) % step === 0 || f === s[s.length - 1]);
-}
+function onGrid(stock) { return [...stock].sort((a, b) => a - b); }
 
-// Summary of what real tries showed for one strut (used for history and for display).
+// Summary of what tries showed for one strut.
 function edges(rated) {
   const passes = rated.filter(x => x.r.pass === true).map(x => x.f);
   const lowPass = passes.length ? Math.min(...passes) : null;
@@ -51,57 +39,68 @@ function edges(rated) {
   return { lowPass, highFail, lowGood, highBad };
 }
 
-// Where one strut stands. Two edges are searched, in this order:
+// Where one strut stands. Results come ONLY from real tries on this rooflight.
+// Earlier rooflights (`prior`) only decide which strut to try next.
+// Two edges are found to the nearest stocked step, in this order:
 //   1. "opens" vs "doesn't open" (struggling still counts as opening, so we keep going down)
 //   2. "opens well" vs "struggles"
-// `missing` = forces not to hand right now. `prior` = what earlier rooflights tell us (see priorsFor).
 function halfState(n, tests, stock, settings, missing = [], prior = null) {
   const h = HALVES[n];
-  const full = onGrid(stock, h.stroke);
+  const full = onGrid(stock);
   const list = full.filter(f => !missing.includes(f));
-  const real = tests.filter(t => RATINGS[t[h.part]]).map(t => ({ f: t[h.key], r: RATINGS[t[h.part]], v: false }));
-  const virt = consistentPriors(real, prior?.obs || []);
-  const rated = real.concat(virt);
+  const rated = tests.filter(t => RATINGS[t[h.part]]).map(t => ({ f: t[h.key], r: RATINGS[t[h.part]] }));
   const { lowPass, highFail, lowGood, highBad } = edges(rated);
-  const struggles = [...new Set(real.filter(x => x.r.pass && !x.r.good).map(x => x.f))].sort((a, b) => a - b);
-  const isReal = (f, test) => real.some(x => x.f === f && test(x.r));
-  const inferred = {
-    good: lowGood !== null && !isReal(lowGood, r => r.good === true),
-    fail: highFail !== null && !isReal(highFail, r => r.pass === false),
-  };
-  const est = prior?.est || {};
-  const start = est.good ?? (n === 1 ? settings.start_150 : settings.start_100);
+  const struggles = [...new Set(rated.filter(x => x.r.pass && !x.r.good).map(x => x.f))].sort((a, b) => a - b);
+  const est = prior?.est || {}, hint = prior?.hint || {};
+  // Expected edges for this size: from the fitted estimate, else from bigger/smaller rooflights.
+  const expGood = est.good ?? hint.hi ?? null;          // first strut expected to open it well
+  const expOpen = est.open ?? (hint.lo != null ? hint.lo + 1 : null); // first strut expected to open it at all
   const keep = lowGood ?? lowPass;
-  const base = { lowGood, struggles, highFail, lowPass, inferred, learnt: virt.length > 0 || est.good != null };
+  const base = { lowGood, struggles, highFail, lowPass, learnt: expGood != null || expOpen != null };
   const out = o => ({ ...base, ...o });
 
   if (!list.length) return out({ done: false, force: null, status: 'nothing' });
-  if (!rated.length) return out({ done: false, force: closest(list, start), status: 'start' });
+  if (!rated.length) {
+    // First try: where we expect it to open well (never above what opened a bigger rooflight well).
+    let t = expGood ?? (n === 1 ? settings.start_150 : settings.start_100);
+    if (hint.hi != null) t = Math.min(t, hint.hi);
+    return out({ done: false, force: closest(list, t), status: 'start' });
+  }
 
-  const gap = (lo, hi) => {
+  // Pick inside a gap: aim at the expected edge if it's inside the gap, otherwise halve the gap.
+  // `exp` is the first value expected to be on the upper side, so test the step just below it first.
+  const gap = (lo, hi, exp) => {
     const avail = list.filter(s => s > lo && s < hi);
-    if (avail.length) return { open: true, pick: closest(avail, (lo + hi) / 2) };
-    return { open: false, paused: full.some(s => s > lo && s < hi) };
+    if (!avail.length) return { open: false, paused: full.some(s => s > lo && s < hi) };
+    if (exp != null && exp > lo && exp <= hi) {
+      const below = avail.filter(s => s < exp);
+      return { open: true, pick: below.length ? below[below.length - 1] : avail[0] };
+    }
+    return { open: true, pick: closest(avail, (lo + hi) / 2) };
   };
 
   // ---- Edge 1: opens vs doesn't open ----
   if (lowPass === null) { // nothing has opened yet: go stronger
     const higher = list.filter(s => s > highFail);
     if (!higher.length) return out({ done: true, force: full[full.length - 1], status: full.some(s => s > highFail) ? 'paused' : 'toostrong' });
-    const target = est.good != null ? Math.max(est.good, highFail + 1) : (highFail + higher[higher.length - 1]) / 2;
-    return out({ done: false, force: closest(higher, target), status: 'up' });
+    const cap = hint.hi != null && hint.hi > highFail ? hint.hi : higher[higher.length - 1]; // never above what opened a bigger rooflight
+    const t = expGood != null && expGood > highFail ? Math.min(expGood, cap) : (highFail + cap) / 2;
+    return out({ done: false, force: closest(higher, t), status: 'up' });
   }
-  if (highFail === null) { // everything opened so far: drop, to just below where we expect it to stop opening
+  if (highFail === null) { // everything opened so far: drop to just below where we expect it to stop opening
     const lower = list.filter(s => s < lowPass);
     if (!lower.length) {
       if (full.some(s => s < lowPass)) return out({ done: true, force: keep, status: 'paused' });
     } else {
       const drop = n === 1 ? settings.drop_150 : settings.drop_100;
-      const target = est.open != null ? Math.min(est.open - 1, lowPass - 1) : lowPass - drop;
-      return out({ done: false, force: closest(lower, target), status: 'down' });
+      if (expOpen != null && expOpen <= lowPass) {
+        const below = lower.filter(s => s < expOpen);
+        return out({ done: false, force: below.length ? below[below.length - 1] : lower[0], status: 'down' });
+      }
+      return out({ done: false, force: closest(lower, lowPass - drop), status: 'down' });
     }
   } else {
-    const g = gap(highFail, lowPass);
+    const g = gap(highFail, lowPass, expOpen);
     if (g.open) return out({ done: false, force: g.pick, status: 'narrow' });
     if (g.paused) return out({ done: true, force: keep, status: 'paused' });
   }
@@ -111,45 +110,20 @@ function halfState(n, tests, stock, settings, missing = [], prior = null) {
     const top = Math.max(...rated.filter(x => x.r.pass === true).map(x => x.f));
     const higher = list.filter(s => s > top);
     if (!higher.length) return out({ done: true, force: keep, status: full.some(s => s > top) ? 'paused' : 'done' });
-    const target = est.good != null ? Math.max(est.good, top + 1) : (top + higher[higher.length - 1]) / 2;
-    return out({ done: false, force: closest(higher, target), status: 'up' });
+    const cap = hint.hi != null && hint.hi > top ? hint.hi : higher[higher.length - 1];
+    const t = expGood != null && expGood > top ? Math.min(expGood, cap) : (top + cap) / 2;
+    return out({ done: false, force: closest(higher, t), status: 'up' });
   }
-  if (highBad === null) { // nothing below has been seen struggling yet: try lower
+  if (highBad === null) { // nothing below has struggled or failed: our weakest strut still opens it well
     const lower = list.filter(s => s < lowGood);
-    if (lower.length) return out({ done: false, force: closest(lower, est.good != null && est.good < lowGood ? est.good : lowGood - 1), status: 'down' });
+    if (lower.length) return out({ done: false, force: lower[lower.length - 1], status: 'down' });
     if (full.some(s => s < lowGood)) return out({ done: true, force: keep, status: 'paused' });
   } else {
-    const g = gap(highBad, lowGood);
+    const g = gap(highBad, lowGood, expGood);
     if (g.open) return out({ done: false, force: g.pick, status: 'narrow' });
     if (g.paused) return out({ done: true, force: keep, status: 'paused' });
   }
   return out({ done: true, force: keep, status: 'done' });
-}
-
-// Drop any inferred fact that clashes with a real try on this rooflight (real tries always win).
-// If earlier rooflights disagree with each other, trust the ones with the most tries and set aside the rest.
-function consistentPriors(real, obs) {
-  const ok = o => {
-    const r = INFERRED[o.kind];
-    return !real.some(x =>
-      (r.good === true && x.r.good === false && x.f >= o.f) ||
-      (r.pass === true && x.r.pass === false && x.f >= o.f) ||
-      (r.pass === false && x.r.pass === true && x.f <= o.f) ||
-      (r.good === false && x.r.good === true && x.f <= o.f));
-  };
-  const clash = set => {
-    const e = edges(set);
-    return (e.lowPass !== null && e.highFail !== null && e.highFail >= e.lowPass) ||
-           (e.lowGood !== null && e.highBad !== null && e.highBad >= e.lowGood);
-  };
-  const bySrc = {};
-  for (const o of obs.filter(ok)) (bySrc[o.src] = bySrc[o.src] || { w: o.w || 1, list: [] }).list.push({ f: o.f, r: INFERRED[o.kind], v: true });
-  let kept = [];
-  for (const g of Object.values(bySrc).sort((a, b) => b.w - a.w)) {
-    const trial = kept.concat(g.list);
-    if (!clash(trial)) kept = trial;
-  }
-  return kept;
 }
 
 // ---------- learning from earlier rooflights ----------
@@ -174,7 +148,7 @@ function fitEstimate(points, target) {
   if (!points.length) return null;
   const X = points.map(pt => [1, Math.log(pt.L), Math.log(pt.W), pt.A]);
   const y = points.map(pt => Math.log(pt.F));
-  const lam = 2, prior = [0, 1, 1, 0];
+  const lam = 0.5, prior = [0, 1, 1, 0];
   const A = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], b = [0, 0, 0, 0];
   for (let i = 0; i < X.length; i++) for (let j = 0; j < 4; j++) { b[j] += X[i][j] * y[i]; for (let k = 0; k < 4; k++) A[j][k] += X[i][j] * X[i][k]; }
   for (let j = 1; j < 4; j++) { A[j][j] += lam; b[j] += lam * prior[j]; }
@@ -190,9 +164,12 @@ function fitEstimate(points, target) {
   return Math.exp(w[0] + w[1] * Math.log(target.length_mm) + w[2] * Math.log(target.width_mm) + w[3] * (target.anti_noise ? 1 : 0));
 }
 
-// Facts and estimates for `target` from `history` (other rooflights, each with .tests).
+// Guidance for `target` from `history` (other rooflights, each with .tests). Never used as a result.
+//  hint.hi = lowest strut that opened a no-smaller rooflight well (don't start above this)
+//  hint.lo = highest strut that failed to open a no-bigger rooflight (expect this to fail too)
+//  est.good / est.open = fitted estimate of the two edges for this size
 function priorsFor(target, history) {
-  const pri = { 150: { obs: [], est: {} }, 100: { obs: [], est: {} } };
+  const pri = { 150: { hint: {}, est: {} }, 100: { hint: {}, est: {} } };
   if (!target || !target.length_mm || !target.width_mm) return pri;
   const pts = { 150: { good: [], open: [] }, 100: { good: [], open: [] } };
   for (const h of history || []) {
@@ -200,26 +177,24 @@ function priorsFor(target, history) {
     const res = resultsOf(h);
     const lighter = lighterOrSame(target, h), heavier = lighterOrSame(h, target);
     for (const s of [150, 100]) {
-      const e = res[s], o = [];
-      if (lighter) {
-        if (e.lowGood !== null) o.push({ f: e.lowGood, kind: 'good' });
-        if (e.lowPass !== null) o.push({ f: e.lowPass, kind: 'pass' });
-      }
-      if (heavier) {
-        if (e.highFail !== null) o.push({ f: e.highFail, kind: 'fail' });
-        if (e.highBad !== null) o.push({ f: e.highBad, kind: 'bad' });
-      }
-      for (const x of o) pri[s].obs.push({ ...x, src: h.id, w: h.tests.length });
+      const e = res[s], k = pri[s].hint;
+      if (lighter && e.lowGood !== null) k.hi = Math.min(k.hi ?? Infinity, e.lowGood);
+      if (heavier && e.highFail !== null) k.lo = Math.max(k.lo ?? -Infinity, e.highFail);
       const pt = { L: h.length_mm, W: h.width_mm, A: h.anti_noise ? 1 : 0 };
-      // Only use edges that were actually pinned down (a result on both sides).
+      // Only edges that were pinned down (a result on both sides) feed the estimate.
       if (e.lowGood !== null && e.highBad !== null) pts[s].good.push({ ...pt, F: (e.lowGood + e.highBad) / 2 });
       if (e.lowPass !== null && e.highFail !== null) pts[s].open.push({ ...pt, F: (e.lowPass + e.highFail) / 2 });
     }
   }
   for (const s of [150, 100]) {
-    const g = fitEstimate(pts[s].good, target), o = fitEstimate(pts[s].open, target);
-    if (g) pri[s].est.good = g;
-    if (o) pri[s].est.open = o;
+    const k = pri[s].hint;
+    if (k.hi != null && k.lo != null && k.lo >= k.hi) { delete k.hi; delete k.lo; } // earlier results disagree: ignore
+    let g = fitEstimate(pts[s].good, target), o = fitEstimate(pts[s].open, target);
+    if (g != null && k.hi != null) g = Math.min(g, k.hi);   // never expect higher than a bigger rooflight needed
+    if (o != null && k.lo != null) o = Math.max(o, k.lo + 1);
+    if (g != null && o != null && o > g) o = g;
+    if (g != null) pri[s].est.good = g;
+    if (o != null) pri[s].est.open = o;
   }
   return pri;
 }
@@ -232,8 +207,7 @@ function nextSuggestion(tests, cfg, missing = { 150: [], 100: [] }, priors = nul
     h1: s1, h2: s2,
     force_150: s1.force,
     force_100: s2.force,
-    // Always at least one real try, even when earlier rooflights already pin the answer down.
-    finished: s1.done && s2.done && tests.length > 0,
+    finished: s1.done && s2.done,
     overLimit: tests.length >= cfg.settings.max_tests,
   };
 }

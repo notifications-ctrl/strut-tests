@@ -62,12 +62,15 @@ function on(sel, fn) { document.querySelectorAll(sel).forEach(el => el.addEventL
 function sizeText(l) { return `${l.length_mm} × ${l.width_mm}`; }
 function serverRooflight(l) { const { tests, missing, keepGoing, ...r } = l; return r; }
 // Earlier rooflights to learn from: everything downloaded, plus anything on this phone not yet sent.
+// Test rooflights (SIM-, TRY-, TEST-) only learn from other test rooflights; real ones only from real ones.
+const isTestRef = ref => /^(SIM|TRY|TEST)-/i.test(ref || '');
 function priorsOf(l) {
   const byId = {};
   for (const h of history) byId[h.id] = h;
-  for (const x of Object.values(lids)) if (x.tests.length && !/^SIM-/i.test(x.reference)) byId[x.id] = x;
+  for (const x of Object.values(lids)) if (x.tests.length) byId[x.id] = x;
   delete byId[l.id];
-  return priorsFor(l, Object.values(byId));
+  const same = Object.values(byId).filter(h => h.reference !== undefined && isTestRef(h.reference) === isTestRef(l.reference));
+  return priorsFor(l, same);
 }
 function missingOf(l) { if (!l.missing) l.missing = { 150: [], 100: [] }; return l.missing; }
 function toast(msg) {

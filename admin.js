@@ -10,19 +10,9 @@ function on(sel, fn) { document.querySelectorAll(sel).forEach(el => el.addEventL
 function nameOf(id) { return D.testers.find(t => t.id === id)?.name || ''; }
 function fmt(ts) { return ts ? new Date(ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''; }
 function cfgFromData() { return { stock150: D.stock150, stock100: D.stock100, settings: D.settings }; }
-// Results use earlier rooflights too (same as the phones); values known only from those are marked *.
-function resultFor(r) {
-  // Same rule as the phones: learn from everything except SIM- rooflights.
-  const all = D.rooflights.filter(x => !/^SIM-/i.test(x.reference || '')).map(x => ({ ...x, tests: testsFor(x.id) }));
-  return nextSuggestion(testsFor(r.id), cfgFromData(), undefined, priorsFor(r, all));
-}
+// Results come only from the rooflight's own tries.
+function resultFor(r) { return nextSuggestion(testsFor(r.id), cfgFromData()); }
 const mark = (v, inf) => v === null || v === undefined ? '' : `${v}${inf ? '*' : ''}`;
-function inferredText(s) {
-  const out = [];
-  if (s.h1.inferred?.good) out.push('150 opens'); if (s.h1.inferred?.fail) out.push("150 doesn't open");
-  if (s.h2.inferred?.good) out.push('100 opens'); if (s.h2.inferred?.fail) out.push("100 doesn't open");
-  return out.join(', ');
-}
 function testsFor(id) { return D.tests.filter(t => t.rooflight_id === id).sort((a, b) => a.test_no - b.test_no); }
 
 function isTest(r) { return /^(SIM|TRY|TEST)-/i.test(r.reference || ''); }
@@ -157,10 +147,9 @@ function renderResults() {
         <div><span class="pill g" style="min-width:110px"><b>700</b><small>Opens</small></span> The weakest strut that opens the lid properly.</div>
         <div><span class="pill s" style="min-width:110px"><b>500–650</b><small>Struggles</small></span> Struts that open it, but slowly or with effort.</div>
         <div><span class="pill n" style="min-width:110px"><b>450</b><small>Doesn't open</small></span> The strongest strut that doesn't open it.</div>
-        <div><span class="pill" style="min-width:110px"><b>700<sup>*</sup></b></span> Worked out from other rooflights, not tested on this one.</div>
         <div><span class="pill" style="min-width:110px"><b>Below 400</b></span> The answer is outside the struts we stock.</div>
       </div>
-      <p class="note">The 150 strut is tested in 100 N steps, the 100 strut in 50 N steps. "Test data" means a reference starting SIM-, TRY- or TEST-; it's ignored when the app learns.</p>
+      <p class="note">Every figure comes from real tries on that rooflight, to the nearest 50 N. Earlier rooflights only help the app choose which strut to try. "Test data" means a reference starting SIM-, TRY- or TEST-; real rooflights never learn from it.</p>
     </details>
     <div class="row" style="flex-wrap:wrap">
       <button class="act blue" id="csvSum" style="flex:1 1 170px">⬇ Summary for Excel</button>
@@ -234,11 +223,11 @@ function summaryCsv() {
   const cfg = cfgFromData();
   const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Tries',
     '150 lowest that opens N', '150 struggles N', "150 highest that doesn't open N", '150 found',
-    '100 lowest that opens N', '100 struggles N', "100 highest that doesn't open N", '100 found', 'Known from earlier rooflights (not tested)', 'Status', 'Tester', 'Started'];
+    '100 lowest that opens N', '100 struggles N', "100 highest that doesn't open N", '100 found', 'Status', 'Tester', 'Started'];
   const rows = D.rooflights.map(r => { const ts = testsFor(r.id); const s = resultFor(r); return [
     r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', ts.length,
     s.h1.lowGood ?? '', s.h1.struggles.join(' '), s.h1.highFail ?? '', s.h1.done ? 'Yes' : 'No',
-    s.h2.lowGood ?? '', s.h2.struggles.join(' '), s.h2.highFail ?? '', s.h2.done ? 'Yes' : 'No', inferredText(s),
+    s.h2.lowGood ?? '', s.h2.struggles.join(' '), s.h2.highFail ?? '', s.h2.done ? 'Yes' : 'No',
     r.finished ? 'Finished' : 'Open', nameOf(r.tester_id), isoDate(r.created_at)]; });
   return toCsv([head, ...rows]);
 }

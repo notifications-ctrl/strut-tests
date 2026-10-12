@@ -259,12 +259,11 @@ begin
   if r is null or r = 'locked' then return public._bad(r); end if;
   return json_build_object('rooflights', coalesce((
     select json_agg(json_build_object(
-      'id', rl.id, 'length_mm', rl.length_mm, 'width_mm', rl.width_mm, 'anti_noise', rl.anti_noise,
+      'id', rl.id, 'reference', rl.reference, 'length_mm', rl.length_mm, 'width_mm', rl.width_mm, 'anti_noise', rl.anti_noise,
       'tests', (select json_agg(json_build_object('force_150', t.force_150, 'force_100', t.force_100, 'part1', t.part1, 'part2', t.part2))
                 from public.tests t where t.rooflight_id = rl.id)))
     from public.rooflights rl
     where exists (select 1 from public.tests t where t.rooflight_id = rl.id)
-      and rl.reference not ilike 'SIM-%'   -- simulated test rooflights are not real data
   ), '[]'));
 end $$;
 revoke all on function public.app_history(text) from public, authenticated;
