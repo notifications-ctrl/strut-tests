@@ -63,13 +63,14 @@ function renderResults() {
     const v = x => x === null ? '' : x;
     const main = `<tr class="lid" data-id="${r.id}">
       <td>${open.has(r.id) ? '▾' : '▸'} ${esc(r.reference)}</td><td>${r.length_mm} × ${r.width_mm}</td>
-      <td>${r.anti_noise ? 'Yes' : 'No'}</td><td>${r.pairs}</td><td>${r.lid}</td><td>${ts.length}</td>
-      <td>${v(s.h1.lowPass)}</td><td>${v(s.h1.highFail)}</td><td>${v(s.h2.lowPass)}</td><td>${v(s.h2.highFail)}</td>
+      <td>${r.anti_noise ? 'Yes' : 'No'}</td><td>${ts.length}</td>
+      <td>${v(s.h1.lowGood)}</td><td>${rangeText(s.h1.struggles)}</td><td>${v(s.h1.highFail)}</td>
+      <td>${v(s.h2.lowGood)}</td><td>${rangeText(s.h2.struggles)}</td><td>${v(s.h2.highFail)}</td>
       <td>${r.finished ? 'Finished' : 'Open'}</td><td>${esc(nameOf(r.tester_id))}</td><td>${fmt(r.created_at)}</td></tr>`;
     if (!open.has(r.id)) return main;
-    const sub = ts.length ? `<table class="data"><tr><th>#</th><th>150 N</th><th>100 N</th><th>Part 1</th><th>Part 2</th><th>Long strut first?</th><th>Temp</th><th>Note</th><th>Tester</th><th>When</th></tr>
-      ${ts.map(t => `<tr><td>${t.test_no}</td><td>${t.force_150}</td><td>${t.force_100}</td><td>${RATINGS[t.part1].label}</td><td>${RATINGS[t.part2].label}</td>
-        <td>${t.seq_answer ? SEQ[t.seq_answer] : ''}</td><td>${t.temperature ? TEMPS[t.temperature] : ''}</td><td style="white-space:normal">${esc(t.note)}</td>
+    const sub = ts.length ? `<table class="data"><tr><th>#</th><th>150 N</th><th>150 result</th><th>100 N</th><th>100 result</th><th>Long strut first?</th><th>Note</th><th>Tester</th><th>When</th></tr>
+      ${ts.map(t => `<tr><td>${t.test_no}</td><td>${t.force_150}</td><td>${RATINGS[t.part1].label}</td><td>${t.force_100}</td><td>${RATINGS[t.part2].label}</td>
+        <td>${t.seq_answer ? SEQ[t.seq_answer] : ''}</td><td style="white-space:normal">${esc(t.note)}</td>
         <td>${esc(nameOf(t.tester_id))}</td><td>${fmt(t.tested_at)}</td></tr>`).join('')}</table>` : '<p>No tests.</p>';
     return main + `<tr class="sub"><td colspan="13">${sub}
       <p><button class="small secondary" data-fin="${r.id}" data-v="${!r.finished}">${r.finished ? 'Reopen' : 'Mark finished'}</button>
@@ -83,8 +84,8 @@ function renderResults() {
     <button class="secondary small" id="reload">Refresh</button>
     <p class="hint">${D.rooflights.length} lids, ${D.tests.length} tests. Click a row to see its tests.</p>
     <div class="wrap"><table class="data">
-      <tr><th>Reference</th><th>Size mm</th><th>Anti-noise</th><th>Pairs</th><th>Lid</th><th>Tests</th>
-        <th>150 lowest opened</th><th>150 highest didn't</th><th>100 lowest opened</th><th>100 highest didn't</th><th>Status</th><th>Tester</th><th>Started</th></tr>
+      <tr><th>Reference</th><th>Size mm</th><th>Anti-noise</th><th>Tries</th>
+        <th>150 opens</th><th>150 struggles</th><th>150 doesn't open</th><th>100 opens</th><th>100 struggles</th><th>100 doesn't open</th><th>Status</th><th>Tester</th><th>Started</th></tr>
       ${rows || '<tr><td colspan="13">No results yet.</td></tr>'}
     </table></div>`;
   on('tr.lid', e => { const id = e.currentTarget.dataset.id; open.has(id) ? open.delete(id) : open.add(id); renderResults(); });
@@ -104,23 +105,23 @@ function downloadCsv(name, text) {
 }
 const isoDate = ts => ts ? new Date(ts).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }).replace(',', '') : '';
 function testsCsv() {
-  const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Pairs per lid', 'Lid', 'Test no', '150 force N', '100 force N',
-    'Part 1 rating', 'Part 1 result', 'Part 2 rating', 'Part 2 result', 'Long strut opened first', 'Temperature', 'Note', 'Tester', 'Tested at'];
+  const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Try no', '150 force N', '150 result', '100 force N', '100 result',
+    'Long strut opened first', 'Note', 'Tester', 'Tested at'];
   const byId = Object.fromEntries(D.rooflights.map(r => [r.id, r]));
-  const res = k => RATINGS[k].pass ? (k === 'flies' ? 'Too strong' : 'Pass') : 'Fail';
   const rows = D.tests.map(t => { const r = byId[t.rooflight_id] || {}; return [
-    r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', r.pairs, r.lid, t.test_no, t.force_150, t.force_100,
-    RATINGS[t.part1].label, res(t.part1), RATINGS[t.part2].label, res(t.part2), t.seq_answer ? SEQ[t.seq_answer] : '',
-    t.temperature ? TEMPS[t.temperature] : '', t.note, nameOf(t.tester_id), isoDate(t.tested_at)]; });
+    r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', t.test_no, t.force_150, RATINGS[t.part1].label,
+    t.force_100, RATINGS[t.part2].label, t.seq_answer ? SEQ[t.seq_answer] : '', t.note, nameOf(t.tester_id), isoDate(t.tested_at)]; });
   return toCsv([head, ...rows]);
 }
 function summaryCsv() {
   const cfg = cfgFromData();
-  const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Pairs per lid', 'Lid', 'Tests',
-    '150 lowest that opened N', '150 highest that did not N', 'Part 1 settled', '100 lowest that opened N', '100 highest that did not N', 'Part 2 settled', 'Status', 'Tester', 'Started'];
+  const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Tries',
+    '150 lowest that opens N', '150 struggles N', "150 highest that doesn't open N", '150 found',
+    '100 lowest that opens N', '100 struggles N', "100 highest that doesn't open N", '100 found', 'Status', 'Tester', 'Started'];
   const rows = D.rooflights.map(r => { const ts = testsFor(r.id); const s = nextSuggestion(ts, cfg); return [
-    r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', r.pairs, r.lid, ts.length,
-    s.h1.lowPass ?? '', s.h1.highFail ?? '', s.h1.done ? 'Yes' : 'No', s.h2.lowPass ?? '', s.h2.highFail ?? '', s.h2.done ? 'Yes' : 'No',
+    r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', ts.length,
+    s.h1.lowGood ?? '', s.h1.struggles.join(' '), s.h1.highFail ?? '', s.h1.done ? 'Yes' : 'No',
+    s.h2.lowGood ?? '', s.h2.struggles.join(' '), s.h2.highFail ?? '', s.h2.done ? 'Yes' : 'No',
     r.finished ? 'Finished' : 'Open', nameOf(r.tester_id), isoDate(r.created_at)]; });
   return toCsv([head, ...rows]);
 }

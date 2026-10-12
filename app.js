@@ -21,13 +21,11 @@ function testerName(id) { return cfg?.testers.find(t => t.id === id)?.name || ''
 // ---------- sending ----------
 function showPending() {
   const el = $('#pending');
-  const tests = queue.filter(q => q.kind === 'test').length;
   if (!queue.length) { el.classList.add('hidden'); return; }
+  const n = queue.filter(q => q.kind === 'test').length || queue.length;
   el.classList.remove('hidden');
-  let msg = tests ? `${tests} test${tests === 1 ? '' : 's'} waiting to send` : 'Details waiting to send';
-  if (lastSendError) msg += ` (problem: ${lastSendError})`;
-  else if (!navigator.onLine) msg += ' (no signal)';
-  el.textContent = msg;
+  el.textContent = `⟳ ${n} waiting to send`;
+  el.title = lastSendError || (navigator.onLine ? '' : 'No signal');
 }
 
 let flushing = false;
@@ -43,56 +41,59 @@ async function flush() {
       queue.shift(); lastSendError = null; saveQueue();
     }
   } catch (e) {
-    if (e instanceof PinError) { store.del('pin'); lastSendError = 'PIN changed, enter the new one'; showPin(); }
+    if (e instanceof PinError) { store.del('pin'); showPin('PIN changed'); }
     else if (e.server) lastSendError = e.message.slice(0, 80);
     else lastSendError = null; // no signal: try again later
   } finally { flushing = false; showPending(); }
 }
 window.addEventListener('online', flush);
 setInterval(flush, 30000);
-
 function enqueue(kind, data) { queue.push({ kind, data }); saveQueue(); flush(); }
 
 // ---------- helpers ----------
-function screen(html) { app().innerHTML = html; window.scrollTo(0, 0); }
+function screen(html, keepScroll) { app().innerHTML = html; if (!keepScroll) window.scrollTo(0, 0); }
 function on(sel, fn) { document.querySelectorAll(sel).forEach(el => el.addEventListener('click', fn)); }
-function lidLabel(l) {
-  return `${esc(l.reference)} · ${l.length_mm || '?'} × ${l.width_mm || '?'} mm · Lid ${l.lid}`;
+function sizeText(l) { return `${l.length_mm} × ${l.width_mm}`; }
+function serverRooflight(l) { const { tests, missing, keepGoing, ...r } = l; return r; }
+function missingOf(l) { if (!l.missing) l.missing = { 150: [], 100: [] }; return l.missing; }
+function toast(msg) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 2200);
 }
-function serverRooflight(l) {
-  const { tests, ...r } = l; return r;
-}
+function home(show) { $('#homeBtn').style.visibility = show ? 'visible' : 'hidden'; }
 
-// ---------- PIN ----------
+// ---------- PIN (keypad) ----------
 function showPin(msg) {
-  $('#homeBtn').style.visibility = 'hidden';
+  home(false);
+  let pin = '';
   screen(`
-    <h1>Strut tests</h1>
-    <p>Enter the factory PIN. You only do this once on this phone.</p>
-    <label class="field" for="pin">Factory PIN</label>
-    <input id="pin" type="password" inputmode="numeric" autocomplete="off" maxlength="12">
-    <p class="err" id="pinErr">${esc(msg || '')}</p>
-    <button class="primary" id="go">Unlock</button>`);
-  const go = async () => {
-    const pin = $('#pin').value.trim();
+    <div class="center"><div style="font-size:52px;margin-top:10px">🔒</div><h1>Factory PIN</h1></div>
+    <div class="dots" id="dots"></div>
+    <p class="err center" id="err">${esc(msg || '')}</p>
+    <div class="pad">
+      ${[1,2,3,4,5,6,7,8,9].map(n => `<button data-k="${n}">${n}</button>`).join('')}
+      <button data-k="del">⌫</button><button data-k="0">0</button><button data-k="ok" class="k-ok">✓</button>
+    </div>`);
+  const dots = () => { $('#dots').innerHTML = '<i></i>'.repeat(pin.length); };
+  on('[data-k]', async e => {
+    const k = e.currentTarget.dataset.k;
+    if (k === 'del') { pin = pin.slice(0, -1); return dots(); }
+    if (k !== 'ok') { if (pin.length < 12) pin += k; $('#err').textContent = ''; return dots(); }
     if (!pin) return;
-    $('#go').disabled = true; $('#pinErr').textContent = 'Checking…';
+    $('#err').textContent = '…';
     try {
       const data = await rpc('app_config', { p_pin: pin });
       store.set('pin', pin); cfg = data; store.set('cfg', cfg); lastSendError = null;
       flush(); start();
-    } catch (e) {
-      $('#go').disabled = false;
-      $('#pinErr').textContent = e instanceof PinError ? 'That PIN is not right. Try again.'
-        : e instanceof LockedError ? e.message
-        : 'No signal. You need signal the first time.';
+    } catch (err) {
+      pin = ''; dots();
+      $('#err').textContent = err instanceof PinError ? 'Wrong PIN' : err instanceof LockedError ? 'Locked. Wait 10 min.' : 'Needs signal the first time';
     }
-  };
-  on('#go', go);
-  $('#pin').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  });
 }
 
-// ---------- refresh settings & open tests from server ----------
+// ---------- refresh settings & open rooflights from server ----------
 async function refresh() {
   const pin = store.get('pin', null);
   if (!pin || !navigator.onLine) return;
@@ -109,18 +110,18 @@ async function refresh() {
       for (const t of r.tests) if (!ids.has(t.id)) local.tests.push(t);
       local.tests.sort((a, b) => a.test_no - b.test_no || a.tested_at.localeCompare(b.tested_at));
     }
-    // Lids finished elsewhere (or deleted): drop local copies that have nothing waiting to send.
+    // Finished elsewhere (or deleted): drop local copies with nothing waiting to send.
     const waiting = new Set(queue.map(q => q.kind === 'test' ? q.data.rooflight_id : q.data.id));
     for (const id of Object.keys(lids)) {
       if (!serverIds.has(id) && !waiting.has(id) && !lids[id].finished) delete lids[id];
     }
     saveLids();
   } catch (e) {
-    if (e instanceof PinError) { store.del('pin'); showPin('The PIN has changed. Enter the new one.'); throw e; }
+    if (e instanceof PinError) { store.del('pin'); showPin('PIN changed'); throw e; }
   }
 }
 
-// ---------- start ----------
+// ---------- start / who / home ----------
 async function start() {
   showPending();
   if (!store.get('pin', null) || !cfg) return showPin();
@@ -130,278 +131,249 @@ async function start() {
 }
 
 function showWho() {
-  $('#homeBtn').style.visibility = 'hidden';
-  const names = cfg.testers;
+  home(false);
   screen(`
-    <h1>Who are you?</h1>
-    ${names.length ? names.map(t => `<button class="secondary" data-id="${t.id}">${esc(t.name)}</button>`).join('')
-      : '<p class="notice warn">No names set up yet. Ask Mark to add your name.</p>'}
-  `);
+    <h1>Who's testing?</h1>
+    ${cfg.testers.length ? cfg.testers.map(t => `<button class="item" data-id="${t.id}"><span class="avatar">${esc(t.name[0])}</span><span class="t"><b>${esc(t.name)}</b></span><span class="go-arrow">›</span></button>`).join('')
+      : '<div class="card">No names yet. Ask Mark to add yours.</div>'}`);
   on('[data-id]', e => { store.set('tester', e.currentTarget.dataset.id); start(); });
 }
 
+function chipsFor(l) {
+  const s = nextSuggestion(l.tests, cfg, missingOf(l));
+  const c = (name, h) => `<span class="chip ${h.done ? 'ok' : ''}">${name} ${h.done ? '✓' : '…'}</span>`;
+  return c('150', s.h1) + c('100', s.h2);
+}
+
 function showHome() {
-  $('#homeBtn').style.visibility = 'hidden';
+  home(false);
+  const me = tester();
   const open = Object.values(lids).filter(l => !l.finished).sort((a, b) => b.created_at.localeCompare(a.created_at));
   screen(`
     <div id="homeScreen">
-      <h1>Hello ${esc(tester().name)}</h1>
-      <p class="hint mt0">Not you? <a href="#" id="changeName">Change name</a></p>
-      <button class="primary" id="newTest">New test</button>
-      ${open.length ? `<h2>Carry on with</h2>` + open.map(l => `
-        <button class="secondary" data-lid="${l.id}">${lidLabel(l)}<br>${l.tests.length} test${l.tests.length === 1 ? '' : 's'} done</button>`).join('') : ''}
+      <div class="row" style="align-items:center"><h1 style="margin:6px 0">Hi ${esc(me.name)} 👋</h1>
+        <button class="btn ghost" id="changeName" style="flex:0 0 auto;width:auto;margin:0">Not me</button></div>
+      <button class="btn blue" id="newTest"><span class="big">＋</span> New rooflight</button>
+      ${open.map(l => `<button class="item" data-lid="${l.id}">
+        <span class="t"><b>${esc(l.reference)}</b><span class="muted">${sizeText(l)} · ${l.tests.length} tries</span><br>${chipsFor(l)}</span>
+        <span class="go-arrow">›</span></button>`).join('')}
     </div>`);
   on('#newTest', showDetails);
-  on('[data-lid]', e => showFit(e.currentTarget.dataset.lid));
-  $('#changeName').addEventListener('click', e => { e.preventDefault(); store.del('tester'); showWho(); });
+  on('[data-lid]', e => showTest(e.currentTarget.dataset.lid));
+  on('#changeName', () => { store.del('tester'); showWho(); });
 }
 
-// ---------- rooflight details ----------
+// ---------- new rooflight ----------
 function showDetails() {
-  $('#homeBtn').style.visibility = 'visible';
-  const f = { anti_noise: false, pairs: 2, lid: null };
+  home(true);
+  let anti = false;
   screen(`
-    <h1>Rooflight details</h1>
-    <label class="field" for="ref">Roof reference</label>
+    <h1>New rooflight</h1>
+    <label class="field" for="ref">Reference</label>
     <input id="ref" type="text" autocomplete="off" autocapitalize="characters">
     <div class="row">
       <div><label class="field" for="len">Length mm</label><input id="len" type="text" inputmode="numeric" pattern="[0-9]*"></div>
       <div><label class="field" for="wid">Width mm</label><input id="wid" type="text" inputmode="numeric" pattern="[0-9]*"></div>
     </div>
-    <label class="field">Anti-noise?</label>
-    <div class="row toggle" id="an">
-      <button class="choice sel" data-v="false">No</button><button class="choice" data-v="true">Yes</button>
-    </div>
-    <label class="field">Strut pairs per lid</label>
-    <div class="row toggle" id="pairs">
-      <button class="choice" data-v="1">1</button><button class="choice sel" data-v="2">2</button><button class="choice" data-v="3">3</button>
-    </div>
-    <label class="field">Which lid?</label>
-    <div class="row toggle" id="lid">
-      <button class="choice" data-v="1">Lid 1</button><button class="choice" data-v="2">Lid 2</button>
-    </div>
+    <label class="field">Anti-noise</label>
+    <div class="seg" id="an"><button class="sel" data-v="0">No</button><button data-v="1">Yes</button></div>
     <p class="err" id="err"></p>
-    <button class="primary" id="go">Start testing</button>`);
-  const group = (id, key, parse) => on(`#${id} .choice`, e => {
-    document.querySelectorAll(`#${id} .choice`).forEach(b => b.classList.remove('sel'));
-    e.currentTarget.classList.add('sel'); f[key] = parse(e.currentTarget.dataset.v);
-  });
-  group('an', 'anti_noise', v => v === 'true');
-  group('pairs', 'pairs', Number);
-  group('lid', 'lid', Number);
+    <button class="btn go" id="go">Start ›</button>`);
+  on('#an button', e => { anti = e.currentTarget.dataset.v === '1'; document.querySelectorAll('#an button').forEach(b => b.classList.toggle('sel', b === e.currentTarget)); });
   on('#go', () => {
     const ref = $('#ref').value.trim();
     const len = parseInt($('#len').value, 10), wid = parseInt($('#wid').value, 10);
-    const err = !ref ? 'Enter the roof reference.' : !(len > 0) || !(wid > 0) ? 'Enter the length and width in mm.' : !f.lid ? 'Choose Lid 1 or Lid 2.' : '';
-    if (err) { $('#err').textContent = err; return; }
-    const l = { id: uuid(), reference: ref, length_mm: len, width_mm: wid, anti_noise: f.anti_noise, pairs: f.pairs, lid: f.lid,
+    if (!ref) return $('#err').textContent = 'Reference?';
+    if (!(len > 0) || !(wid > 0)) return $('#err').textContent = 'Length and width?';
+    const l = { id: uuid(), reference: ref, length_mm: len, width_mm: wid, anti_noise: anti, pairs: 2, lid: 1,
                 tester_id: tester().id, finished: false, created_at: new Date().toISOString(), tests: [] };
     lids[l.id] = l; saveLids();
     enqueue('rooflight', serverRooflight(l));
-    showFit(l.id);
+    showTest(l.id);
   });
 }
 
-// ---------- what to fit ----------
-// Struts not to hand right now are remembered for this lid only; they stay on the stock list.
-function missingOf(l) { if (!l.missing) l.missing = { 150: [], 100: [] }; return l.missing; }
+// ---------- the test card ----------
+// One screen per try: what to fit, rate it, save. Then it shows the next struts to fit.
+function trackHtml(stroke, h, l, next) {
+  const stock = stroke === 150 ? cfg.stock150 : cfg.stock100;
+  const key = stroke === 150 ? 'force_150' : 'force_100';
+  const part = stroke === 150 ? 'part1' : 'part2';
+  const miss = missingOf(l)[stroke];
+  const last = {};
+  for (const t of l.tests) last[t[key]] = t[part];
+  const cls = f => {
+    if (f === next) return 't-next';
+    const r = RATINGS[last[f]];
+    if (r) return r.good ? 't-good' : r.pass ? 't-str' : 't-no';
+    return miss.includes(f) ? 't-miss' : '';
+  };
+  return `<div class="track">${stock.map(f => `<i class="${cls(f)}"></i>`).join('')}</div>
+    <div class="track-ends"><span>${stock[0]}</span><span>${stock[stock.length - 1]}</span></div>`;
+}
 
-function showFit(lidId, chosen) {
-  $('#homeBtn').style.visibility = 'visible';
+function pointsHtml(h) {
+  return `<div class="points">
+    <div class="p-good"><b>${h.lowGood ?? '–'}</b><small>Opens</small></div>
+    <div class="p-str"><b>${rangeText(h.struggles) || '–'}</b><small>Struggles</small></div>
+    <div class="p-no"><b>${h.highFail ?? '–'}</b><small>Doesn't open</small></div></div>`;
+}
+
+function showTest(lidId, state) {
+  home(true);
   const l = lids[lidId];
-  const miss = missingOf(l);
-  const sug = nextSuggestion(l.tests, cfg, miss);
-  if (!chosen && (sug.force_150 === null || sug.force_100 === null)) {
-    // Every strut for one stroke marked as not to hand: let them pick.
-    return showChoose(lidId, sug.force_150 ?? cfg.stock150[0], sug.force_100 ?? cfg.stock100[0],
-      'None of the suggested struts are to hand. Pick what you can fit.');
-  }
-  const f150 = chosen ? chosen.f150 : sug.force_150;
-  const f100 = chosen ? chosen.f100 : sug.force_100;
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+  const st = state || { f150: sug.force_150, f100: sug.force_100, part1: null, part2: null, seq: null, note: '', pop: false };
+  if (st.f150 === null) st.f150 = cfg.stock150[cfg.stock150.length - 1];
+  if (st.f100 === null) st.f100 = cfg.stock100[cfg.stock100.length - 1];
   const prev = l.tests[l.tests.length - 1];
-  const mark = (v, old) => prev && v !== old ? `<span class="changed">${v} N</span>` : `${v} N`;
-  const notes = [];
-  if (sug.h1.status === 'limited') notes.push('Part 1 is paused: the strut it needs next is not to hand.');
-  else if (sug.h1.done) notes.push(`Part 1 is settled, so the 150 stays at ${sug.force_150} N.`);
-  if (sug.h2.status === 'limited') notes.push('Part 2 is paused: the strut it needs next is not to hand.');
-  else if (sug.h2.done) notes.push(`Part 2 is settled, so the 100 stays at ${sug.force_100} N.`);
-  const missing = [...miss[150].map(f => ({ s: 150, f })), ...miss[100].map(f => ({ s: 100, f }))];
-  screen(`
-    <p class="hint mt0">${lidLabel(l)} · Test ${l.tests.length + 1}</p>
-    ${sug.finished && !chosen ? `<div class="done-banner">Both parts are settled</div><p>You can still do another test if you want to check something.</p>` : ''}
-    <div class="fit">
-      <span class="s">Fit 150mm @ ${mark(f150, prev?.force_150)}</span>
-      <span class="s">and 100mm @ ${mark(f100, prev?.force_100)}</span>
-      <small>on every pair (${l.pairs} pair${l.pairs === 1 ? '' : 's'})${chosen ? ' · your choice' : ''}</small>
-    </div>
-    ${!chosen && notes.length ? `<p class="hint">${notes.join(' ')}</p>` : ''}
-    <p><b>Open and close it 3 times. Rate the worst one.</b></p>
-    <button class="primary" id="rate">Fitted. Rate it</button>
-    ${!chosen && !sug.h1.done ? `<button class="secondary" data-miss="150" data-f="${f150}">Don't have 150 @ ${f150} N</button>` : ''}
-    ${!chosen && !sug.h2.done ? `<button class="secondary" data-miss="100" data-f="${f100}">Don't have 100 @ ${f100} N</button>` : ''}
-    <button class="secondary" id="diff">Use different struts</button>
-    ${missing.length ? `<p class="hint">Not to hand for this lid (tap to put back):</p><div class="chips">${missing.map(m =>
-      `<button data-back="${m.s}" data-f="${m.f}">${m.s} @ ${m.f}</button>`).join('')}</div>` : ''}
-    ${l.tests.length ? '<button class="secondary" id="sum">See results so far</button>' : ''}
-    <button class="secondary" id="fin">Finish this lid</button>`);
-  on('#rate', () => showRate(lidId, f150, f100));
-  on('[data-miss]', e => {
-    const { miss: s, f } = e.currentTarget.dataset;
-    if (!miss[s].includes(Number(f))) miss[s].push(Number(f));
-    saveLids(); showFit(lidId);
-  });
-  on('[data-back]', e => {
-    const { back: s, f } = e.currentTarget.dataset;
-    miss[s] = miss[s].filter(x => x !== Number(f));
-    saveLids(); showFit(lidId);
-  });
-  on('#diff', () => showChoose(lidId, f150, f100));
-  on('#sum', () => showSummary(lidId));
-  on('#fin', () => finishLid(lidId));
-}
+  const seq = needsSeqQuestion(st.f150, st.f100);
 
-function showChoose(lidId, f150, f100, msg) {
-  const sel = { f150, f100 };
-  const chips = (list, key) => list.map(v => `<button data-k="${key}" data-v="${v}" class="${sel[key] === v ? 'sel' : ''}">${v}</button>`).join('');
-  screen(`
-    <h1>Which struts are fitted?</h1>
-    <p class="hint mt0">${esc(msg || 'Pick what is actually on the lid.')}</p>
-    <h2>150mm strut (N)</h2><div class="chips">${chips(cfg.stock150, 'f150')}</div>
-    <h2>100mm strut (N)</h2><div class="chips">${chips(cfg.stock100, 'f100')}</div>
-    <button class="primary" id="use">Use these</button>
-    <button class="secondary" id="back">Back</button>`);
-  on('.chips button', e => {
-    const { k, v } = e.currentTarget.dataset;
-    sel[k] = Number(v);
-    document.querySelectorAll(`.chips button[data-k="${k}"]`).forEach(b => b.classList.toggle('sel', Number(b.dataset.v) === sel[k]));
-  });
-  on('#use', () => showFit(lidId, sel));
-  on('#back', () => showFit(lidId));
-}
+  const strutCard = (stroke, h, f, part, prevF) => {
+    const changed = prev && f !== prevF;
+    const badge = h.status === 'paused' ? '<span class="pause-badge">Paused</span>'
+      : h.status === 'toostrong' ? '<span class="pause-badge">None strong enough</span>'
+      : h.done ? '<span class="ok-badge">✓ Found</span>' : '';
+    return `<div class="card ${h.done ? 'done' : ''}">
+      <div class="card-head"><span class="tag">${stroke} strut</span>${badge}</div>
+      <button class="force ${changed ? 'changed' : ''} ${changed && st.pop ? 'pop' : ''}" data-pick="${stroke}">
+        <span class="n">${f}</span><span class="u">N</span>${changed ? `<span class="was">was ${prevF}</span>` : ''}</button>
+      ${trackHtml(stroke, h, l, f)}
+      ${h.done ? pointsHtml(h) : ''}
+      ${stroke === 100 ? '<p class="muted" style="margin:8px 0 0">Help it to halfway first if needed</p>' : ''}
+      <div class="tiles">${RATING_ORDER.map(r => `<button class="tile ${RATINGS[r].cls} ${st[part] === r ? 'sel' : ''}" data-part="${part}" data-v="${r}">
+        <span class="ic">${RATINGS[r].icon}</span>${RATINGS[r].label}</button>`).join('')}</div>
+      ${stroke === 100 && seq ? `<div class="seq"><span>Long strut first?</span>${Object.entries(SEQ).map(([k, v]) =>
+        `<button data-seq="${k}" class="${st.seq === k ? 'sel' : ''}">${k === 'notsure' ? '?' : v}</button>`).join('')}</div>` : ''}
+    </div>`;
+  };
 
-// ---------- rating ----------
-function showRate(lidId, f150, f100) {
-  const l = lids[lidId];
-  const seq = needsSeqQuestion(f150, f100);
-  const ans = { part1: null, part2: null, seq_answer: null, temperature: null };
-  const ratingButtons = key => RATING_ORDER.map(r =>
-    `<button class="choice ${RATINGS[r].cls}" data-q="${key}" data-v="${r}">${RATINGS[r].label}</button>`).join('');
+  const ready = st.part1 && st.part2 && (!seq || st.seq);
   screen(`
-    <p class="hint mt0">${lidLabel(l)} · Test ${l.tests.length + 1} · 150 @ ${f150} N, 100 @ ${f100} N</p>
-    <h1 id="q-part1">Part 1: shut to halfway</h1>
-    ${ratingButtons('part1')}
-    <h1 id="q-part2">Part 2: halfway to fully open</h1>
-    <p class="hint">If part 1 needed a push, help it to halfway, let go, then rate part 2.</p>
-    ${ratingButtons('part2')}
-    ${seq ? `<h1 id="q-seq_answer">Did the long strut open first?</h1>
-      <p class="hint">The 100 is close in strength to the 150 here, so check which one moved first.</p>
-      <div class="row toggle">${Object.entries(SEQ).map(([k, v]) => `<button class="choice" data-q="seq_answer" data-v="${k}">${v}</button>`).join('')}</div>` : ''}
-    <h2>Temperature (optional)</h2>
-    <div class="row toggle">${Object.entries(TEMPS).map(([k, v]) => `<button class="choice" data-q="temperature" data-v="${k}">${v}</button>`).join('')}</div>
-    <h2>Note (optional)</h2>
-    <textarea id="note" rows="3"></textarea>
-    <p class="err" id="err"></p>
-    <button class="primary" id="save">Save test</button>`);
-  on('[data-q]', e => {
-    const { q, v } = e.currentTarget.dataset;
-    const optional = q === 'temperature';
-    ans[q] = optional && ans[q] === v ? null : v; // tap again to clear temperature
-    document.querySelectorAll(`[data-q="${q}"]`).forEach(b => b.classList.toggle('sel', b.dataset.v === ans[q]));
-  });
+    <div class="card-head"><div><b style="font-size:20px">${esc(l.reference)}</b> <span class="muted">${sizeText(l)}</span></div>
+      <span class="muted">Try ${l.tests.length + 1}</span></div>
+    <p class="muted" style="margin:4px 0 0">Fit these on both pairs · open 3× · rate the worst</p>
+    ${strutCard(150, sug.h1, st.f150, 'part1', prev?.force_150)}
+    ${strutCard(100, sug.h2, st.f100, 'part2', prev?.force_100)}
+    ${st.noteOpen || st.note ? `<textarea id="note" placeholder="Note">${esc(st.note)}</textarea>` : '<button class="btn ghost" id="addNote">✎ Add note</button>'}
+    <button class="btn go" id="save" ${ready ? '' : 'disabled'}><span class="big">✓</span> Save</button>
+    <div class="row">
+      ${l.tests.length ? '<button class="btn ghost" id="hist">History</button>' : ''}
+      <button class="btn ghost" id="fin">Finish</button>
+    </div>`, state && !st.pop);
+  st.pop = false;
+
+  const keepNote = () => { const n = $('#note'); if (n) st.note = n.value; };
+  on('[data-part]', e => { keepNote(); const { part, v } = e.currentTarget.dataset; st[part] = v; showTest(lidId, st); });
+  on('[data-seq]', e => { keepNote(); st.seq = e.currentTarget.dataset.seq; showTest(lidId, st); });
+  on('#addNote', () => { st.noteOpen = true; showTest(lidId, st); $('#note').focus(); });
+  on('[data-pick]', e => { keepNote(); pickSheet(lidId, Number(e.currentTarget.dataset.pick), st); });
+  on('#hist', () => historySheet(l));
+  on('#fin', () => { if (confirm('Finish this rooflight?')) finishLid(lidId); });
   on('#save', () => {
-    const missing = ['part1', 'part2', ...(seq ? ['seq_answer'] : [])].find(k => !ans[k]);
-    if (missing) {
-      $('#err').textContent = missing === 'seq_answer' ? 'Answer "Did the long strut open first?"' : `Rate ${missing === 'part1' ? 'part 1' : 'part 2'} first.`;
-      document.getElementById('q-' + missing).scrollIntoView({ behavior: 'smooth' });
-      return;
-    }
+    keepNote();
     const t = {
-      id: uuid(), rooflight_id: lidId, test_no: l.tests.length + 1, force_150: f150, force_100: f100,
-      part1: ans.part1, part2: ans.part2, seq_answer: ans.seq_answer || '', temperature: ans.temperature || '',
-      note: $('#note').value.trim(), tester_id: tester().id, tested_at: new Date().toISOString(),
+      id: uuid(), rooflight_id: lidId, test_no: l.tests.length + 1, force_150: st.f150, force_100: st.f100,
+      part1: st.part1, part2: st.part2, seq_answer: seq ? st.seq : '', temperature: '',
+      note: (st.note || '').trim(), tester_id: tester().id, tested_at: new Date().toISOString(),
     };
     l.tests.push(t); saveLids();
     enqueue('test', t);
-    showResult(lidId);
+    afterSave(lidId);
   });
 }
 
-// ---------- after saving ----------
-function showResult(lidId) {
+function afterSave(lidId) {
   const l = lids[lidId];
   const sug = nextSuggestion(l.tests, cfg, missingOf(l));
-  const sentNote = navigator.onLine ? 'Test saved.' : 'Test saved on this phone. It will send when there is signal.';
-  let body;
-  if (sug.finished) {
-    body = `<div class="done-banner">Test finished</div>
-      <p>Both parts are settled for this lid.</p>
-      ${summaryHtml(l)}
-      <button class="primary" id="fin">Finish this lid</button>
-      <button class="secondary" id="more">Do another test anyway</button>`;
-  } else if (sug.overLimit) {
-    body = `<div class="notice warn"><b>${l.tests.length} tests done on this lid.</b> You can finish here or carry on.</div>
-      ${summaryHtml(l)}
-      <button class="primary" id="fin">Finish this lid</button>
-      <button class="secondary" id="more">Carry on testing</button>`;
-  } else {
-    body = `<div class="fit"><span class="s">Next: 150mm @ ${sug.force_150} N</span><span class="s">and 100mm @ ${sug.force_100} N</span></div>
-      <button class="primary" id="more">Next test</button>
-      ${summaryHtml(l)}
-      <button class="secondary" id="fin">Finish this lid now</button>`;
-  }
-  screen(`<div class="notice ok">${sentNote}</div>${body}`);
-  on('#more', () => showFit(lidId));
+  if (sug.finished) { toast('✓ Saved'); return showWin(lidId); }
+  if (sug.overLimit && !l.keepGoing) return showLimit(lidId);
+  const prev = l.tests[l.tests.length - 1];
+  const moves = [];
+  if (sug.force_150 !== prev.force_150) moves.push(`150 → ${sug.force_150}`);
+  if (sug.force_100 !== prev.force_100) moves.push(`100 → ${sug.force_100}`);
+  toast(`✓ Saved${moves.length ? ' · Next: ' + moves.join(', ') : ''}`);
+  showTest(lidId, { f150: sug.force_150, f100: sug.force_100, part1: null, part2: null, seq: null, note: '', pop: true });
+}
+
+function showLimit(lidId) {
+  const l = lids[lidId];
+  screen(`<div class="card win"><div class="em">⏱️</div><h1>${l.tests.length} tries done</h1></div>
+    <button class="btn go" id="fin">Finish</button>
+    <button class="btn" id="more">Keep going</button>`);
   on('#fin', () => finishLid(lidId));
+  on('#more', () => { l.keepGoing = true; saveLids(); showTest(lidId); });
+}
+
+function showWin(lidId) {
+  home(true);
+  const l = lids[lidId];
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+  screen(`
+    <div class="card win"><div class="em">🎉</div><h1>All found!</h1><div class="muted">${esc(l.reference)} · ${sizeText(l)} · ${l.tests.length} tries</div></div>
+    <div class="card"><div class="tag">150 strut</div>${pointsHtml(sug.h1)}</div>
+    <div class="card"><div class="tag">100 strut</div>${pointsHtml(sug.h2)}</div>
+    <button class="btn go" id="fin"><span class="big">✓</span> Finish rooflight</button>
+    <button class="btn ghost" id="more">One more try</button>`);
+  on('#fin', () => finishLid(lidId));
+  on('#more', () => showTest(lidId));
 }
 
 function finishLid(lidId) {
   const l = lids[lidId];
-  if (!confirm('Finish this lid? It will leave the "Carry on" list.')) return;
   l.finished = true; saveLids();
   enqueue('rooflight', serverRooflight(l));
-  showSummary(lidId, true);
+  toast('✓ Rooflight finished');
+  showHome();
 }
 
-function showSummary(lidId, finished) {
+// ---------- sheets ----------
+function sheet(html) {
+  const bg = document.createElement('div'); bg.className = 'sheet-bg';
+  bg.innerHTML = `<div class="sheet">${html}</div>`;
+  bg.addEventListener('click', e => { if (e.target === bg) bg.remove(); });
+  document.body.appendChild(bg);
+  return bg;
+}
+
+// Tap a strut number: "don't have it" (suggests another) or pick a different one to fit.
+function pickSheet(lidId, stroke, st) {
   const l = lids[lidId];
-  screen(`
-    ${finished ? '<div class="done-banner">Lid finished</div>' : ''}
-    <h1>${lidLabel(l)}</h1>
-    ${summaryHtml(l)}
-    <h2>Every test</h2>
-    ${testsListHtml(l)}
-    ${finished ? '<button class="primary" id="home2">Back to start</button>' : '<button class="primary" id="back">Back</button>'}`);
-  on('#home2', showHome);
-  on('#back', () => showFit(lidId));
-}
-
-function summaryHtml(l) {
-  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
-  const row = (name, st) => {
-    const s = halfSummaryText(st);
-    const status = st.status === 'nostock' ? 'Even our strongest strut did not open it'
-      : st.status === 'lowest' ? 'Our weakest strut opens it'
-      : st.status === 'limited' ? 'Paused: next strut not to hand'
-      : st.done ? 'Settled' : 'Still testing';
-    return `<tr><th>${name}</th><td>${s.opened}</td><td>${s.didnt}</td><td>${status}</td></tr>`;
+  const miss = missingOf(l)[stroke];
+  const stock = stroke === 150 ? cfg.stock150 : cfg.stock100;
+  const key = stroke === 150 ? 'f150' : 'f100';
+  const cur = st[key];
+  const bg = sheet(`
+    <div class="card-head"><span class="tag">${stroke} strut</span><button class="btn ghost" data-x style="width:auto;margin:0;min-height:44px">✕</button></div>
+    <button class="btn" data-dont style="color:var(--bad)">✕ Don't have ${cur} N</button>
+    <div class="muted" style="margin:10px 0 8px">Or fit a different one</div>
+    <div class="chips">${stock.map(f => `<button data-f="${f}" class="${f === cur ? 'sel' : ''} ${miss.includes(f) ? 'miss' : ''}">${f}</button>`).join('')}</div>`);
+  bg.querySelector('[data-x]').onclick = () => bg.remove();
+  bg.querySelector('[data-dont]').onclick = () => {
+    if (!miss.includes(cur)) miss.push(cur);
+    saveLids(); bg.remove();
+    const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+    st[key] = stroke === 150 ? sug.force_150 : sug.force_100;
+    if (st[key] === null) { toast('None left to hand'); st[key] = cur; }
+    else toast(`Try ${st[key]} N instead`);
+    st.pop = true; showTest(lidId, st);
   };
-  return `<table class="summary">
-    <tr><th></th><th>Lowest that opened it</th><th>Highest that didn't</th><th></th></tr>
-    ${row('Part 1 (150)', sug.h1)}${row('Part 2 (100)', sug.h2)}
-  </table>`;
+  bg.querySelectorAll('[data-f]').forEach(b => b.onclick = () => {
+    const f = Number(b.dataset.f);
+    const i = miss.indexOf(f); if (i >= 0) miss.splice(i, 1); // picking it means we have it after all
+    saveLids(); bg.remove();
+    st[key] = f; showTest(lidId, st);
+  });
 }
 
-function testsListHtml(l) {
-  if (!l.tests.length) return '<p>No tests yet.</p>';
-  const pill = r => `<span class="pill ${RATINGS[r].cls}" style="background:var(--c)">${RATINGS[r].label}</span>`;
-  return `<ul class="tests-list">${[...l.tests].reverse().map(t => `
-    <li><b>Test ${t.test_no}</b> · 150 @ ${t.force_150} N, 100 @ ${t.force_100} N<br>
-      Part 1: ${pill(t.part1)}<br>Part 2: ${pill(t.part2)}
-      ${t.seq_answer ? `<br>Long strut opened first: ${SEQ[t.seq_answer]}` : ''}
-      ${t.temperature ? `<br>Temperature: ${TEMPS[t.temperature]}` : ''}
-      ${t.note ? `<br>Note: ${esc(t.note)}` : ''}
-      <br><span class="hint">${esc(testerName(t.tester_id))} · ${new Date(t.tested_at).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })}</span>
-    </li>`).join('')}</ul>`;
+function historySheet(l) {
+  const dot = r => `<span class="dot ${RATINGS[r].cls}"></span>`;
+  const bg = sheet(`
+    <div class="card-head"><span class="tag">History</span><button class="btn ghost" data-x style="width:auto;margin:0;min-height:44px">✕</button></div>
+    <ul class="hist">${[...l.tests].reverse().map(t => `<li><span class="no">${t.test_no}</span>
+      <span style="flex:1">${dot(t.part1)}<b>${t.force_150}</b> <span class="muted">${RATINGS[t.part1].label}</span><br>
+      ${dot(t.part2)}<b>${t.force_100}</b> <span class="muted">${RATINGS[t.part2].label}</span>${t.note ? `<br><span class="muted">✎ ${esc(t.note)}</span>` : ''}</span></li>`).join('')}</ul>`);
+  bg.querySelector('[data-x]').onclick = () => bg.remove();
 }
 
 // ---------- boot ----------
