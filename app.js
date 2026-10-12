@@ -12,6 +12,7 @@ let cfg = store.get('cfg', null);           // testers, stock, settings
 let lids = store.get('lids', {});           // rooflight id -> rooflight + tests
 let queue = store.get('queue', []);         // items waiting to send
 let lastSendError = null;
+let history = store.get('hist', []);     // earlier rooflights (any phone), for learning
 const saveLids = () => store.set('lids', lids);
 const saveQueue = () => { store.set('queue', queue); showPending(); };
 
@@ -60,6 +61,14 @@ function screen(html, keepScroll) { app().innerHTML = html; if (!keepScroll) win
 function on(sel, fn) { document.querySelectorAll(sel).forEach(el => el.addEventListener('click', fn)); }
 function sizeText(l) { return `${l.length_mm} × ${l.width_mm}`; }
 function serverRooflight(l) { const { tests, missing, keepGoing, ...r } = l; return r; }
+// Earlier rooflights to learn from: everything downloaded, plus anything on this phone not yet sent.
+function priorsOf(l) {
+  const byId = {};
+  for (const h of history) byId[h.id] = h;
+  for (const x of Object.values(lids)) if (x.tests.length) byId[x.id] = x;
+  delete byId[l.id];
+  return priorsFor(l, Object.values(byId));
+}
 function missingOf(l) { if (!l.missing) l.missing = { 150: [], 100: [] }; return l.missing; }
 function toast(msg) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
@@ -105,6 +114,8 @@ async function refresh() {
   try {
     const data = await rpc('app_config', { p_pin: pin });
     cfg = data; store.set('cfg', cfg);
+    try { const h = await rpc('app_history', { p_pin: pin }); history = h.rooflights || []; store.set('hist', history); }
+    catch (e) { if (e instanceof PinError) throw e; } // older database without app_history: carry on without learning
     const open = await rpc('app_open_rooflights', { p_pin: pin });
     const serverIds = new Set();
     for (const r of open.rooflights) {
@@ -145,7 +156,7 @@ function showWho() {
 }
 
 function chipsFor(l) {
-  const s = nextSuggestion(l.tests, cfg, missingOf(l));
+  const s = nextSuggestion(l.tests, cfg, missingOf(l), priorsOf(l));
   const c = (name, h) => `<span class="chip ${h.done ? 'ok' : ''}">${name} ${h.done ? '✓' : '…'}</span>`;
   return c('150', s.h1) + c('100', s.h2);
 }
@@ -222,20 +233,22 @@ function trackHtml(stroke, h, l, next) {
 function pointsHtml(h, stroke) {
   const stock = stroke === 150 ? cfg.stock150 : cfg.stock100;
   const lo = stock[0], hi = stock[stock.length - 1];
-  const opens = h.lowGood ?? (h.highFail === hi || h.status === 'toostrong' ? `Over ${hi}` : '–');
+  const star = '<sup title="Known from earlier rooflights">*</sup>';
+  const opens = h.lowGood !== null ? `${h.lowGood}${h.inferred?.good ? star : ''}` : (h.highFail === hi || h.status === 'toostrong' ? `Over ${hi}` : '–');
   const str = rangeText(h.struggles) || (h.lowGood === lo ? `Below ${lo}` : '–');
-  const no = h.highFail ?? (h.lowPass === lo ? `Below ${lo}` : '–');
+  const no = h.highFail !== null ? `${h.highFail}${h.inferred?.fail ? star : ''}` : (h.lowPass === lo ? `Below ${lo}` : '–');
   return `<div class="points">
     <div class="p-good"><b>${opens}</b><small>Opens</small></div>
     <div class="p-str"><b>${str}</b><small>Struggles</small></div>
-    <div class="p-no"><b>${no}</b><small>Doesn't open</small></div></div>`;
+    <div class="p-no"><b>${no}</b><small>Doesn't open</small></div></div>
+    ${h.inferred?.good || h.inferred?.fail ? '<p class="muted" style="margin:6px 0 0;font-size:13px">* known from earlier rooflights</p>' : ''}`;
 }
 function outOfRange(h) { return h.highFail === null || h.lowGood === null || h.status === 'paused'; }
 
 function showTest(lidId, state) {
   home(true);
   const l = lids[lidId];
-  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l), priorsOf(l));
   const st = state || { f150: sug.force_150, f100: sug.force_100, part1: null, part2: null, seq: null, note: '', pop: false };
   if (st.f150 === null) st.f150 = cfg.stock150[cfg.stock150.length - 1];
   if (st.f100 === null) st.f100 = cfg.stock100[cfg.stock100.length - 1];
@@ -265,7 +278,7 @@ function showTest(lidId, state) {
   screen(`
     <div class="card-head"><div><b style="font-size:20px">${esc(l.reference)}</b> <span class="muted">${sizeText(l)}</span></div>
       <span class="muted">Try ${l.tests.length + 1}</span></div>
-    <p class="muted" style="margin:4px 0 0">Fit these on both pairs · open 3× · rate the worst</p>
+    <p class="muted" style="margin:4px 0 0">Fit these on both pairs · open once · rate it${sug.h1.learnt || sug.h2.learnt ? ' · 🧠 using earlier rooflights' : ''}</p>
     ${strutCard(150, sug.h1, st.f150, 'part1', prev?.force_150)}
     ${strutCard(100, sug.h2, st.f100, 'part2', prev?.force_100)}
     ${st.noteOpen || st.note ? `<textarea id="note" placeholder="Note">${esc(st.note)}</textarea>` : '<button class="btn ghost" id="addNote">✎ Add note</button>'}
@@ -298,7 +311,7 @@ function showTest(lidId, state) {
 
 function afterSave(lidId) {
   const l = lids[lidId];
-  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l), priorsOf(l));
   if (sug.finished) { toast('✓ Saved'); return showWin(lidId); }
   if (sug.overLimit && !l.keepGoing) return showLimit(lidId);
   const prev = l.tests[l.tests.length - 1];
@@ -321,7 +334,7 @@ function showLimit(lidId) {
 function showWin(lidId) {
   home(true);
   const l = lids[lidId];
-  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l), priorsOf(l));
   screen(`
     <div class="card win"><div class="em">${outOfRange(sug.h1) || outOfRange(sug.h2) ? '🏁' : '🎉'}</div>
       <h1>${outOfRange(sug.h1) || outOfRange(sug.h2) ? 'Done, as far as our struts go' : 'All found!'}</h1><div class="muted">${esc(l.reference)} · ${sizeText(l)} · ${l.tests.length} tries</div></div>
@@ -366,7 +379,7 @@ function pickSheet(lidId, stroke, st) {
   bg.querySelector('[data-dont]').onclick = () => {
     if (!miss.includes(cur)) miss.push(cur);
     saveLids(); bg.remove();
-    const sug = nextSuggestion(l.tests, cfg, missingOf(l));
+    const sug = nextSuggestion(l.tests, cfg, missingOf(l), priorsOf(l));
     st[key] = stroke === 150 ? sug.force_150 : sug.force_100;
     if (st[key] === null) { toast('None left to hand'); st[key] = cur; }
     else toast(`Try ${st[key]} N instead`);

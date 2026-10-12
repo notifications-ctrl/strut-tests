@@ -10,6 +10,18 @@ function on(sel, fn) { document.querySelectorAll(sel).forEach(el => el.addEventL
 function nameOf(id) { return D.testers.find(t => t.id === id)?.name || ''; }
 function fmt(ts) { return ts ? new Date(ts).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : ''; }
 function cfgFromData() { return { stock150: D.stock150, stock100: D.stock100, settings: D.settings }; }
+// Results use earlier rooflights too (same as the phones); values known only from those are marked *.
+function resultFor(r) {
+  const all = D.rooflights.map(x => ({ ...x, tests: testsFor(x.id) }));
+  return nextSuggestion(testsFor(r.id), cfgFromData(), undefined, priorsFor(r, all));
+}
+const mark = (v, inf) => v === null || v === undefined ? '' : `${v}${inf ? '*' : ''}`;
+function inferredText(s) {
+  const out = [];
+  if (s.h1.inferred?.good) out.push('150 opens'); if (s.h1.inferred?.fail) out.push("150 doesn't open");
+  if (s.h2.inferred?.good) out.push('100 opens'); if (s.h2.inferred?.fail) out.push("100 doesn't open");
+  return out.join(', ');
+}
 function testsFor(id) { return D.tests.filter(t => t.rooflight_id === id).sort((a, b) => a.test_no - b.test_no); }
 
 function showLogin(msg) {
@@ -59,13 +71,13 @@ function renderResults() {
   const cfg = cfgFromData();
   const rows = D.rooflights.map(r => {
     const ts = testsFor(r.id);
-    const s = nextSuggestion(ts, cfg);
+    const s = resultFor(r);
     const v = x => x === null ? '' : x;
     const main = `<tr class="lid" data-id="${r.id}">
       <td>${open.has(r.id) ? '▾' : '▸'} ${esc(r.reference)}</td><td>${r.length_mm} × ${r.width_mm}</td>
       <td>${r.anti_noise ? 'Yes' : 'No'}</td><td>${ts.length}</td>
-      <td>${v(s.h1.lowGood)}</td><td>${rangeText(s.h1.struggles)}</td><td>${v(s.h1.highFail)}</td>
-      <td>${v(s.h2.lowGood)}</td><td>${rangeText(s.h2.struggles)}</td><td>${v(s.h2.highFail)}</td>
+      <td>${mark(s.h1.lowGood, s.h1.inferred?.good)}</td><td>${rangeText(s.h1.struggles)}</td><td>${mark(s.h1.highFail, s.h1.inferred?.fail)}</td>
+      <td>${mark(s.h2.lowGood, s.h2.inferred?.good)}</td><td>${rangeText(s.h2.struggles)}</td><td>${mark(s.h2.highFail, s.h2.inferred?.fail)}</td>
       <td>${r.finished ? 'Finished' : 'Open'}</td><td>${esc(nameOf(r.tester_id))}</td><td>${fmt(r.created_at)}</td></tr>`;
     if (!open.has(r.id)) return main;
     const sub = ts.length ? `<table class="data"><tr><th>#</th><th>150 N</th><th>150 result</th><th>100 N</th><th>100 result</th><th>Long strut first?</th><th>Note</th><th>Tester</th><th>When</th></tr>
@@ -82,7 +94,7 @@ function renderResults() {
       <button class="primary" id="csvSum">Download summary (CSV)</button>
     </div>
     <button class="secondary small" id="reload">Refresh</button>
-    <p class="hint">${D.rooflights.length} lids, ${D.tests.length} tests. Click a row to see its tests.</p>
+    <p class="hint">${D.rooflights.length} rooflights, ${D.tests.length} tries. Click a row to see its tries. * = known from earlier rooflights, not tested on this one.</p>
     <div class="wrap"><table class="data">
       <tr><th>Reference</th><th>Size mm</th><th>Anti-noise</th><th>Tries</th>
         <th>150 opens</th><th>150 struggles</th><th>150 doesn't open</th><th>100 opens</th><th>100 struggles</th><th>100 doesn't open</th><th>Status</th><th>Tester</th><th>Started</th></tr>
@@ -117,11 +129,11 @@ function summaryCsv() {
   const cfg = cfgFromData();
   const head = ['Reference', 'Length mm', 'Width mm', 'Anti-noise', 'Tries',
     '150 lowest that opens N', '150 struggles N', "150 highest that doesn't open N", '150 found',
-    '100 lowest that opens N', '100 struggles N', "100 highest that doesn't open N", '100 found', 'Status', 'Tester', 'Started'];
-  const rows = D.rooflights.map(r => { const ts = testsFor(r.id); const s = nextSuggestion(ts, cfg); return [
+    '100 lowest that opens N', '100 struggles N', "100 highest that doesn't open N", '100 found', 'Known from earlier rooflights (not tested)', 'Status', 'Tester', 'Started'];
+  const rows = D.rooflights.map(r => { const ts = testsFor(r.id); const s = resultFor(r); return [
     r.reference, r.length_mm, r.width_mm, r.anti_noise ? 'Yes' : 'No', ts.length,
     s.h1.lowGood ?? '', s.h1.struggles.join(' '), s.h1.highFail ?? '', s.h1.done ? 'Yes' : 'No',
-    s.h2.lowGood ?? '', s.h2.struggles.join(' '), s.h2.highFail ?? '', s.h2.done ? 'Yes' : 'No',
+    s.h2.lowGood ?? '', s.h2.struggles.join(' '), s.h2.highFail ?? '', s.h2.done ? 'Yes' : 'No', inferredText(s),
     r.finished ? 'Finished' : 'Open', nameOf(r.tester_id), isoDate(r.created_at)]; });
   return toCsv([head, ...rows]);
 }
