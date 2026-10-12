@@ -203,17 +203,29 @@ function showDetails() {
 }
 
 // ---------- what to fit ----------
+// Struts not to hand right now are remembered for this lid only; they stay on the stock list.
+function missingOf(l) { if (!l.missing) l.missing = { 150: [], 100: [] }; return l.missing; }
+
 function showFit(lidId, chosen) {
   $('#homeBtn').style.visibility = 'visible';
   const l = lids[lidId];
-  const sug = nextSuggestion(l.tests, cfg);
+  const miss = missingOf(l);
+  const sug = nextSuggestion(l.tests, cfg, miss);
+  if (!chosen && (sug.force_150 === null || sug.force_100 === null)) {
+    // Every strut for one stroke marked as not to hand: let them pick.
+    return showChoose(lidId, sug.force_150 ?? cfg.stock150[0], sug.force_100 ?? cfg.stock100[0],
+      'None of the suggested struts are to hand. Pick what you can fit.');
+  }
   const f150 = chosen ? chosen.f150 : sug.force_150;
   const f100 = chosen ? chosen.f100 : sug.force_100;
   const prev = l.tests[l.tests.length - 1];
   const mark = (v, old) => prev && v !== old ? `<span class="changed">${v} N</span>` : `${v} N`;
-  const settled = [];
-  if (sug.h1.done) settled.push(`Part 1 is settled, so the 150 stays at ${sug.force_150} N.`);
-  if (sug.h2.done) settled.push(`Part 2 is settled, so the 100 stays at ${sug.force_100} N.`);
+  const notes = [];
+  if (sug.h1.status === 'limited') notes.push('Part 1 is paused: the strut it needs next is not to hand.');
+  else if (sug.h1.done) notes.push(`Part 1 is settled, so the 150 stays at ${sug.force_150} N.`);
+  if (sug.h2.status === 'limited') notes.push('Part 2 is paused: the strut it needs next is not to hand.');
+  else if (sug.h2.done) notes.push(`Part 2 is settled, so the 100 stays at ${sug.force_100} N.`);
+  const missing = [...miss[150].map(f => ({ s: 150, f })), ...miss[100].map(f => ({ s: 100, f }))];
   screen(`
     <p class="hint mt0">${lidLabel(l)} · Test ${l.tests.length + 1}</p>
     ${sug.finished && !chosen ? `<div class="done-banner">Both parts are settled</div><p>You can still do another test if you want to check something.</p>` : ''}
@@ -222,24 +234,38 @@ function showFit(lidId, chosen) {
       <span class="s">and 100mm @ ${mark(f100, prev?.force_100)}</span>
       <small>on every pair (${l.pairs} pair${l.pairs === 1 ? '' : 's'})${chosen ? ' · your choice' : ''}</small>
     </div>
-    ${!chosen && settled.length ? `<p class="hint">${settled.join(' ')}</p>` : ''}
+    ${!chosen && notes.length ? `<p class="hint">${notes.join(' ')}</p>` : ''}
     <p><b>Open and close it 3 times. Rate the worst one.</b></p>
     <button class="primary" id="rate">Fitted. Rate it</button>
+    ${!chosen && !sug.h1.done ? `<button class="secondary" data-miss="150" data-f="${f150}">Don't have 150 @ ${f150} N</button>` : ''}
+    ${!chosen && !sug.h2.done ? `<button class="secondary" data-miss="100" data-f="${f100}">Don't have 100 @ ${f100} N</button>` : ''}
     <button class="secondary" id="diff">Use different struts</button>
+    ${missing.length ? `<p class="hint">Not to hand for this lid (tap to put back):</p><div class="chips">${missing.map(m =>
+      `<button data-back="${m.s}" data-f="${m.f}">${m.s} @ ${m.f}</button>`).join('')}</div>` : ''}
     ${l.tests.length ? '<button class="secondary" id="sum">See results so far</button>' : ''}
     <button class="secondary" id="fin">Finish this lid</button>`);
   on('#rate', () => showRate(lidId, f150, f100));
+  on('[data-miss]', e => {
+    const { miss: s, f } = e.currentTarget.dataset;
+    if (!miss[s].includes(Number(f))) miss[s].push(Number(f));
+    saveLids(); showFit(lidId);
+  });
+  on('[data-back]', e => {
+    const { back: s, f } = e.currentTarget.dataset;
+    miss[s] = miss[s].filter(x => x !== Number(f));
+    saveLids(); showFit(lidId);
+  });
   on('#diff', () => showChoose(lidId, f150, f100));
   on('#sum', () => showSummary(lidId));
   on('#fin', () => finishLid(lidId));
 }
 
-function showChoose(lidId, f150, f100) {
+function showChoose(lidId, f150, f100, msg) {
   const sel = { f150, f100 };
   const chips = (list, key) => list.map(v => `<button data-k="${key}" data-v="${v}" class="${sel[key] === v ? 'sel' : ''}">${v}</button>`).join('');
   screen(`
     <h1>Which struts are fitted?</h1>
-    <p class="hint mt0">Pick what is actually on the lid.</p>
+    <p class="hint mt0">${esc(msg || 'Pick what is actually on the lid.')}</p>
     <h2>150mm strut (N)</h2><div class="chips">${chips(cfg.stock150, 'f150')}</div>
     <h2>100mm strut (N)</h2><div class="chips">${chips(cfg.stock100, 'f100')}</div>
     <button class="primary" id="use">Use these</button>
@@ -303,7 +329,7 @@ function showRate(lidId, f150, f100) {
 // ---------- after saving ----------
 function showResult(lidId) {
   const l = lids[lidId];
-  const sug = nextSuggestion(l.tests, cfg);
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
   const sentNote = navigator.onLine ? 'Test saved.' : 'Test saved on this phone. It will send when there is signal.';
   let body;
   if (sug.finished) {
@@ -350,11 +376,12 @@ function showSummary(lidId, finished) {
 }
 
 function summaryHtml(l) {
-  const sug = nextSuggestion(l.tests, cfg);
+  const sug = nextSuggestion(l.tests, cfg, missingOf(l));
   const row = (name, st) => {
     const s = halfSummaryText(st);
     const status = st.status === 'nostock' ? 'Even our strongest strut did not open it'
       : st.status === 'lowest' ? 'Our weakest strut opens it'
+      : st.status === 'limited' ? 'Paused: next strut not to hand'
       : st.done ? 'Settled' : 'Still testing';
     return `<tr><th>${name}</th><td>${s.opened}</td><td>${s.didnt}</td><td>${status}</td></tr>`;
   };

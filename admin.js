@@ -178,7 +178,7 @@ function renderSettings() {
     </div>
     <button class="primary" id="saveSet" style="max-width:320px">Save settings</button>
     <h2>PINs</h2>
-    <p class="hint">6 to 12 digits. After changing the factory PIN, each phone asks for the new one.</p>
+    <p class="hint">4 to 12 digits. After changing the factory PIN, each phone asks for the new one.</p>
     <div class="grid2">
       <div><label class="field" for="fpin">New factory PIN</label><input class="inline" id="fpin" inputmode="numeric" autocomplete="off">
         <button class="secondary" id="setF">Change factory PIN</button></div>

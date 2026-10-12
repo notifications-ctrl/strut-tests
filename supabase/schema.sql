@@ -26,7 +26,8 @@ create table public.stock (
   primary key (stroke, force_n)
 );
 insert into public.stock (stroke, force_n)
-select s, f from (values (100), (150)) st(s), generate_series(100, 1200, 50) f;
+select 150, f from generate_series(400, 1300, 50) f
+union all select 100, f from generate_series(250, 600, 50) f;
 
 create table public.rooflights (
   id uuid primary key,
@@ -213,7 +214,7 @@ returns json language plpgsql security definer set search_path = public, extensi
 declare r text := public._pin_role(p_pin);
 begin
   if r is distinct from 'admin' then return public._bad(r); end if;
-  if p_new !~ '^[0-9]{6,12}$' then return json_build_object('error', 'Use 6 to 12 digits.'); end if;
+  if p_new !~ '^[0-9]{4,12}$' then return json_build_object('error', 'Use 4 to 12 digits.'); end if;
   if p_which = 'factory' then update public.settings set factory_pin_hash = crypt(p_new, gen_salt('bf')) where id = 1;
   elsif p_which = 'admin' then update public.settings set admin_pin_hash = crypt(p_new, gen_salt('bf')) where id = 1;
   else return json_build_object('error', 'Unknown PIN.'); end if;
