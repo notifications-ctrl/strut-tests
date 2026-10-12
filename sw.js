@@ -1,5 +1,5 @@
 // Keeps the app working with no signal. Bump VERSION when files change.
-const VERSION = 'strut-v4';
+const VERSION = 'strut-v5';
 const FILES = ['./', './index.html', './style.css', './config.js', './logic.js', './app.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-180.png'];
 

@@ -65,7 +65,7 @@ function serverRooflight(l) { const { tests, missing, keepGoing, ...r } = l; ret
 function priorsOf(l) {
   const byId = {};
   for (const h of history) byId[h.id] = h;
-  for (const x of Object.values(lids)) if (x.tests.length) byId[x.id] = x;
+  for (const x of Object.values(lids)) if (x.tests.length && !/^SIM-/i.test(x.reference)) byId[x.id] = x;
   delete byId[l.id];
   return priorsFor(l, Object.values(byId));
 }

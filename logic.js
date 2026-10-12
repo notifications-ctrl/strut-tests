@@ -88,7 +88,7 @@ function halfState(n, tests, stock, settings, missing = [], prior = null) {
   if (lowPass === null) { // nothing has opened yet: go stronger
     const higher = list.filter(s => s > highFail);
     if (!higher.length) return out({ done: true, force: full[full.length - 1], status: full.some(s => s > highFail) ? 'paused' : 'toostrong' });
-    const target = est.good > highFail ? est.good : (highFail + higher[higher.length - 1]) / 2;
+    const target = est.good != null ? Math.max(est.good, highFail + 1) : (highFail + higher[higher.length - 1]) / 2;
     return out({ done: false, force: closest(higher, target), status: 'up' });
   }
   if (highFail === null) { // everything opened so far: drop, to just below where we expect it to stop opening
@@ -97,7 +97,7 @@ function halfState(n, tests, stock, settings, missing = [], prior = null) {
       if (full.some(s => s < lowPass)) return out({ done: true, force: keep, status: 'paused' });
     } else {
       const drop = n === 1 ? settings.drop_150 : settings.drop_100;
-      const target = est.open != null && est.open < lowPass ? est.open - 1 : lowPass - drop;
+      const target = est.open != null ? Math.min(est.open - 1, lowPass - 1) : lowPass - drop;
       return out({ done: false, force: closest(lower, target), status: 'down' });
     }
   } else {
@@ -111,7 +111,7 @@ function halfState(n, tests, stock, settings, missing = [], prior = null) {
     const top = Math.max(...rated.filter(x => x.r.pass === true).map(x => x.f));
     const higher = list.filter(s => s > top);
     if (!higher.length) return out({ done: true, force: keep, status: full.some(s => s > top) ? 'paused' : 'done' });
-    const target = est.good > top ? est.good : (top + higher[higher.length - 1]) / 2;
+    const target = est.good != null ? Math.max(est.good, top + 1) : (top + higher[higher.length - 1]) / 2;
     return out({ done: false, force: closest(higher, target), status: 'up' });
   }
   if (highBad === null) { // nothing below has been seen struggling yet: try lower
@@ -127,7 +127,7 @@ function halfState(n, tests, stock, settings, missing = [], prior = null) {
 }
 
 // Drop any inferred fact that clashes with a real try on this rooflight (real tries always win).
-// If the inferred facts clash with each other, ignore them all for this strut.
+// If earlier rooflights disagree with each other, trust the ones with the most tries and set aside the rest.
 function consistentPriors(real, obs) {
   const ok = o => {
     const r = INFERRED[o.kind];
@@ -137,10 +137,18 @@ function consistentPriors(real, obs) {
       (r.pass === false && x.r.pass === true && x.f <= o.f) ||
       (r.good === false && x.r.good === true && x.f <= o.f));
   };
-  const kept = obs.filter(ok).map(o => ({ f: o.f, r: INFERRED[o.kind], v: true }));
-  const e = edges(kept);
-  if ((e.lowPass !== null && e.highFail !== null && e.highFail >= e.lowPass) ||
-      (e.lowGood !== null && e.highBad !== null && e.highBad >= e.lowGood)) return [];
+  const clash = set => {
+    const e = edges(set);
+    return (e.lowPass !== null && e.highFail !== null && e.highFail >= e.lowPass) ||
+           (e.lowGood !== null && e.highBad !== null && e.highBad >= e.lowGood);
+  };
+  const bySrc = {};
+  for (const o of obs.filter(ok)) (bySrc[o.src] = bySrc[o.src] || { w: o.w || 1, list: [] }).list.push({ f: o.f, r: INFERRED[o.kind], v: true });
+  let kept = [];
+  for (const g of Object.values(bySrc).sort((a, b) => b.w - a.w)) {
+    const trial = kept.concat(g.list);
+    if (!clash(trial)) kept = trial;
+  }
   return kept;
 }
 
@@ -192,7 +200,7 @@ function priorsFor(target, history) {
     const res = resultsOf(h);
     const lighter = lighterOrSame(target, h), heavier = lighterOrSame(h, target);
     for (const s of [150, 100]) {
-      const e = res[s], o = pri[s].obs;
+      const e = res[s], o = [];
       if (lighter) {
         if (e.lowGood !== null) o.push({ f: e.lowGood, kind: 'good' });
         if (e.lowPass !== null) o.push({ f: e.lowPass, kind: 'pass' });
@@ -201,6 +209,7 @@ function priorsFor(target, history) {
         if (e.highFail !== null) o.push({ f: e.highFail, kind: 'fail' });
         if (e.highBad !== null) o.push({ f: e.highBad, kind: 'bad' });
       }
+      for (const x of o) pri[s].obs.push({ ...x, src: h.id, w: h.tests.length });
       const pt = { L: h.length_mm, W: h.width_mm, A: h.anti_noise ? 1 : 0 };
       // Only use edges that were actually pinned down (a result on both sides).
       if (e.lowGood !== null && e.highBad !== null) pts[s].good.push({ ...pt, F: (e.lowGood + e.highBad) / 2 });
