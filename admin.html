@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Strut Tests Admin</title>
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    main { max-width: 1100px; }
+    body { font-size: 17px; }
+    button { min-height: 52px; font-size: 18px; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 16px; }
+    .tabs button { width: auto; flex: 1 1 120px; margin: 0; }
+    .tabs button.sel { background: var(--brand); color: #fff; border-color: var(--brand); }
+    .wrap { overflow-x: auto; }
+    table.data { border-collapse: collapse; width: 100%; font-size: 15px; }
+    table.data th, table.data td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; white-space: nowrap; }
+    table.data th { background: var(--panel); position: sticky; top: 0; }
+    table.data tr.lid { cursor: pointer; }
+    table.data tr.lid:hover { background: #f7f9fa; }
+    table.data tr.sub td { background: #fbfcfd; white-space: normal; }
+    .small { width: auto; min-height: 40px; font-size: 15px; padding: 4px 12px; margin: 0; display: inline-flex; }
+    input.inline { min-height: 48px; font-size: 18px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="topbar"><span>BSD Strut Tests: Admin</span><button id="logout" style="visibility:hidden">Lock</button></div>
+  <main id="app"><p>Loading…</p></main>
+  <script src="config.js"></script>
+  <script src="logic.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>
